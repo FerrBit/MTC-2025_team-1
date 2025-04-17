@@ -1,0 +1,90 @@
+.welcome-info {
+    padding: 2rem 2.5rem;
+    margin-top: 1.5rem;
+    text-align: left;
+    background-color: #ffffff;
+  }
+  
+  .welcome-info h3 {
+    margin-top: 0;
+    margin-bottom: 1.2rem;
+    color: #1a1a1a;
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: 600;
+  }
+  
+  .welcome-info h4 {
+    margin-top: 1.8rem;
+    margin-bottom: 0.8rem;
+    color: #333;
+    font-size: 1.2rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.4rem;
+    font-weight: 600;
+  }
+  
+  .welcome-info p {
+    color: #555;
+    line-height: 1.7;
+    margin-bottom: 1rem;
+  }
+  
+  .welcome-info ul {
+    list-style: none;
+    padding-left: 0;
+    margin-top: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+  
+  .welcome-info li {
+    color: #555;
+    padding-left: 2rem;
+    position: relative;
+    margin-bottom: 1rem;
+    line-height: 1.7;
+  }
+  
+  .welcome-info li::before {
+    content: '✓';
+    position: absolute;
+    left: 0.5rem;
+    top: 2px;
+    color: #007bff;
+    font-weight: bold;
+    font-size: 1.2rem;
+  }
+  
+  .link-like-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0 3px;
+      font: inherit;
+      color: #007bff;
+      text-decoration: underline;
+      cursor: pointer;
+  }
+  .link-like-btn:hover {
+      color: #0056b3;
+  }
+  
+  @media (max-width: 768px) {
+    .welcome-info {
+      padding: 1.5rem;
+    }
+    .welcome-info h3 {
+        font-size: 1.4rem;
+    }
+    .welcome-info h4 {
+        font-size: 1.1rem;
+    }
+    .welcome-info li {
+        padding-left: 1.5rem;
+        margin-bottom: 0.8rem;
+    }
+    .welcome-info li::before {
+        left: 0.2rem;
+        font-size: 1rem;
+    }
+  }
