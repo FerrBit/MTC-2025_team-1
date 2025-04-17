@@ -1,0 +1,142 @@
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    width: 100%;
+    max-width: 450px;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.25);
+    position: relative;
+    box-sizing: border-box;
+}
+
+.modal-content h2 {
+    margin-top: 0;
+    margin-bottom: 1.8rem;
+    color: #1a1a1a;
+    text-align: center;
+    font-weight: 600;
+}
+
+.modal-content button[aria-label="Закрыть"] {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    background: none;
+    border: none;
+    font-size: 2rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    color: #888;
+    transition: color 0.2s ease;
+}
+
+.modal-content button[aria-label="Закрыть"]:hover {
+    color: #333;
+}
+    .modal-content button[aria-label="Закрыть"]:disabled {
+        color: #ccc;
+        cursor: not-allowed;
+    }
+
+    .modal-content .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .modal-content input[type="email"],
+    .modal-content input[type="text"],
+    .modal-content input[type="password"] {
+    padding: 12px 15px;
+    font-size: 1rem;
+    padding-right: 40px;
+    }
+
+    .modal-content .input-wrapper {
+    position: relative;
+    width: 100%;
+    }
+
+    .modal-content .clear-input-btn {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    padding: 5px;
+    margin: 0;
+    cursor: pointer;
+    color: #999;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: color 0.2s ease, background-color 0.2s ease;
+    }
+
+    .modal-content .clear-input-btn:hover {
+    color: #333;
+    background-color: #f0f0f0;
+    }
+
+    .modal-content .clear-input-btn svg {
+    width: 16px;
+    height: 16px;
+    }
+
+    .modal-content button[type="submit"].primary-btn {
+    display: block;
+    width: 100%;
+    margin: 1.5rem 0 0 0;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    font-size: 1rem;
+    }
+
+    @media (max-width: 768px) {
+    .modal-content {
+        padding: 1.5rem;
+        max-width: 95%;
+    }
+    .modal-content h2 {
+        font-size: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    }
+
+    @media (max-width: 480px) {
+        .modal-content .clear-input-btn {
+            right: 8px;
+            padding: 4px;
+        }
+        .modal-content .clear-input-btn svg {
+            width: 14px;
+            height: 14px;
+        }
+        .modal-content input[type="email"],
+        .modal-content input[type="text"],
+        .modal-content input[type="password"] {
+            padding-right: 35px;
+        }
+        .modal-content {
+            padding: 1.5rem 1rem;
+        }
+        .modal-content button[type="submit"].primary-btn {
+            font-size: 0.95rem;
+        }
+    }

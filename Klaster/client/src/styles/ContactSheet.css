@@ -1,0 +1,87 @@
+.contact-sheets-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+}
+
+.contact-sheet-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 1rem 1rem 1.2rem 1rem;
+    background-color: #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 0.2s ease;
+}
+.contact-sheet-card:hover {
+     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.contact-sheet-card h4 {
+    margin-top: 0;
+    margin-bottom: 0.8rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    text-align: center;
+    color: #333;
+}
+
+.contact-sheet-image {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    object-fit: cover;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    background-color: #f0f0f0;
+    display: block;
+}
+
+.contact-sheet-card p {
+    font-size: 0.9rem;
+    color: #555;
+    margin-bottom: 1rem;
+    text-align: center;
+}
+
+.delete-sheet-btn {
+    margin-top: auto;
+    width: 100%;
+    background-color: #dc3545;
+    border-color: #dc3545;
+    box-shadow: 0 2px 4px rgba(220, 53, 69, 0.2);
+    padding-top: 8px;
+    padding-bottom: 8px;
+    font-size: 0.9rem;
+}
+.delete-sheet-btn:hover:not(:disabled) {
+    background-color: #c82333;
+    border-color: #bd2130;
+    box-shadow: 0 3px 6px rgba(200, 35, 51, 0.3);
+}
+.delete-sheet-btn:disabled {
+    background-color: #f1949d;
+    border-color: #f1949d;
+    box-shadow: none;
+     opacity: 0.8;
+}
+
+@media (max-width: 768px) {
+  .contact-sheets-grid {
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 1rem;
+  }
+   .contact-sheet-card {
+       padding: 1rem;
+   }
+}
+
+@media (max-width: 480px) {
+     .contact-sheets-grid {
+        grid-template-columns: 1fr;
+     }
+      .delete-sheet-btn {
+        font-size: 0.85rem;
+      }
+}
