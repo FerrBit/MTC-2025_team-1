@@ -12,6 +12,7 @@ from visualization import (
     calculate_and_save_centroids_2d,
     create_contact_sheet,
     find_nearest_images_to_centroids,
+    regenerate_contact_sheet_for_cluster
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,9 @@ def run_clustering_pipeline(user_id, embedding_file_path, algorithm, params,
     session = ClusteringSession(
         id=session_id, user_id=user_id, status='STARTED', algorithm=algorithm,
         input_file_path=embedding_file_path,
-        original_input_filename=original_embedding_filename
+        original_input_filename=original_embedding_filename,
+        image_archive_path=archive_path,
+        original_archive_filename=original_archive_filename
     )
     session.set_params(params)
     db.session.add(session)

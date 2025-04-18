@@ -34,6 +34,8 @@ class ClusteringSession(db.Model):
     params_json = db.Column(db.Text, nullable=True)
     input_file_path = db.Column(db.String(512), nullable=True)
     original_input_filename = db.Column(db.String(255), nullable=True)
+    image_archive_path = db.Column(db.String(512), nullable=True)
+    original_archive_filename = db.Column(db.String(255), nullable=True)
     result_message = db.Column(db.Text, nullable=True)
     num_clusters = db.Column(db.Integer, nullable=True)
     processing_time_sec = db.Column(db.Float, nullable=True)

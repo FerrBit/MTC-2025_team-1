@@ -8,7 +8,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from models import db, ClusteringSession, ClusterMetadata, ManualAdjustmentLog
 from algorithms import get_cluster_labels_for_session
 from data_loader import load_embeddings
-from visualization import calculate_and_save_centroids_2d, generate_and_save_scatter_data
+from visualization import calculate_and_save_centroids_2d, generate_and_save_scatter_data, regenerate_contact_sheet_for_cluster
+from flask import current_app
 
 logger = logging.getLogger(__name__)
 
@@ -346,8 +347,9 @@ def merge_clusters(session_id, cluster_labels_to_merge, user_id):
         raise RuntimeError("Ошибка БД при подготовке к слиянию")
 
     try:
-        embeddings, _ = load_embeddings(session.input_file_path)
+        embeddings, image_ids = load_embeddings(session.input_file_path)
         if embeddings is None: raise ValueError("Не удалось загрузить эмбеддинги.")
+        image_ids_available = image_ids is not None and len(image_ids) == embeddings.shape[0]
 
         initial_labels = get_cluster_labels_for_session(session, embeddings)
         if initial_labels is None: raise RuntimeError("Не удалось получить исходные метки.")
@@ -432,6 +434,27 @@ def merge_clusters(session_id, cluster_labels_to_merge, user_id):
 
         db.session.commit()
 
+        session_reloaded_for_cs = db.session.get(ClusteringSession, session_id)
+        if session_reloaded_for_cs and session_reloaded_for_cs.image_archive_path:
+            if image_ids_available:
+                 merged_cluster_meta = db.session.get(ClusterMetadata, new_cluster.id)
+                 if merged_cluster_meta:
+                     regenerate_contact_sheet_for_cluster(
+                         cluster_meta=merged_cluster_meta,
+                         session=session_reloaded_for_cs,
+                         all_embeddings=embeddings,
+                         all_image_ids=image_ids,
+                         final_labels=final_labels
+                     )
+                     db.session.commit()
+                 else:
+                     logger.error(f"Не удалось найти только что слитый кластер {new_cluster.id} для регенерации КС.")
+            else:
+                logger.info(f"Пропуск регенерации КС для слитого кластера {new_cluster.cluster_label} (сессия {session.id}): ID изображений недоступны.")
+        elif not session_reloaded_for_cs or not session_reloaded_for_cs.image_archive_path:
+             logger.info(f"Пропуск регенерации КС для слитого кластера {new_cluster.cluster_label} (сессия {session.id}): Нет пути к архиву.")
+
+
         logger.info(f"Слияние кластеров {cluster_labels_str} успешно. Обновление 2D координат...")
         calculate_and_save_centroids_2d(session.id)
 
@@ -488,8 +511,9 @@ def split_cluster(session_id, cluster_label_to_split_str, num_splits, user_id):
         raise RuntimeError("Ошибка БД при подготовке к разделению")
 
     try:
-        embeddings, _ = load_embeddings(session.input_file_path)
+        embeddings, image_ids = load_embeddings(session.input_file_path)
         if embeddings is None: raise ValueError("Не удалось загрузить эмбеддинги.")
+        image_ids_available = image_ids is not None and len(image_ids) == embeddings.shape[0]
 
         initial_labels = get_cluster_labels_for_session(session, embeddings)
         if initial_labels is None: raise RuntimeError("Не удалось получить исходные метки.")
@@ -597,6 +621,28 @@ def split_cluster(session_id, cluster_label_to_split_str, num_splits, user_id):
 
 
         db.session.commit()
+
+        session_reloaded_for_cs = db.session.get(ClusteringSession, session_id)
+        if session_reloaded_for_cs and session_reloaded_for_cs.image_archive_path:
+            if image_ids_available:
+                logger.info(f"Регенерация КС для {len(new_clusters_added)} разделенных кластеров (сессия {session_id})...")
+                split_clusters_meta = [db.session.get(ClusterMetadata, nc.id) for nc in new_clusters_added]
+                for split_meta in split_clusters_meta:
+                    if split_meta:
+                        regenerate_contact_sheet_for_cluster(
+                            cluster_meta=split_meta,
+                            session=session_reloaded_for_cs,
+                            all_embeddings=embeddings,
+                            all_image_ids=image_ids,
+                            final_labels=final_labels
+                        )
+                    else:
+                        logger.error(f"Не удалось найти метаданные разделенного кластера для регенерации КС.")
+                db.session.commit()
+            else:
+                logger.info(f"Пропуск регенерации КС для разделенных кластеров (сессия {session_id}): ID изображений недоступны.")
+        elif not session_reloaded_for_cs or not session_reloaded_for_cs.image_archive_path:
+            logger.info(f"Пропуск регенерации КС для разделенных кластеров (сессия {session_id}): Нет пути к архиву.")
 
         logger.info(f"Разделение кластера {cluster_label_to_split_str} успешно. Обновление 2D координат...")
         calculate_and_save_centroids_2d(session.id)

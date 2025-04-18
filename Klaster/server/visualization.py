@@ -399,3 +399,102 @@ def generate_and_save_scatter_data(session_id, embeddings, labels):
         pca_time_sec = None
 
     return scatter_cache_file_path, pca_time_sec
+
+
+def regenerate_contact_sheet_for_cluster(cluster_meta: ClusterMetadata, session, all_embeddings, all_image_ids, final_labels):
+    app_config = current_app.config
+    cluster_label_str = cluster_meta.cluster_label
+    cluster_label_int = -999
+    try:
+        cluster_label_int = int(cluster_label_str)
+    except (ValueError, TypeError):
+        logger.error(f"Не удалось преобразовать метку кластера '{cluster_label_str}' в int для регенерации КС сессии {session.id}")
+        return None
+
+    archive_path = session.image_archive_path
+    if not archive_path or not os.path.exists(archive_path):
+        logger.info(f"Регенерация КС для {session.id}/{cluster_label_str} пропущена: архив не найден ({archive_path})")
+        return None
+    if not all_image_ids:
+        logger.info(f"Регенерация КС для {session.id}/{cluster_label_str} пропущена: отсутствуют ID изображений.")
+        return None
+    if all_embeddings is None or all_embeddings.shape[0] != len(all_image_ids):
+        logger.error(f"Регенерация КС для {session.id}/{cluster_label_str}: несоответствие вложений и ID.")
+        return None
+    if final_labels is None or final_labels.shape[0] != len(all_image_ids):
+        logger.error(f"Регенерация КС для {session.id}/{cluster_label_str}: несоответствие меток и ID.")
+        return None
+
+    cluster_point_indices = np.where(final_labels == cluster_label_int)[0]
+    num_points_in_cluster = len(cluster_point_indices)
+
+    if num_points_in_cluster == 0:
+        logger.info(f"Регенерация КС для {session.id}/{cluster_label_str} пропущена: нет точек в кластере.")
+        return None
+
+    cluster_embeddings = all_embeddings[cluster_point_indices]
+    centroid_vector = cluster_meta.get_centroid()
+    if centroid_vector is None:
+        logger.warning(f"Регенерация КС для {session.id}/{cluster_label_str}: центроид не найден в метаданных.")
+        if centroid_vector is None:
+            return None
+
+    images_per_cluster = app_config.get('CONTACT_SHEET_IMAGES_PER_CLUSTER', 9)
+    k_search = min(images_per_cluster, num_points_in_cluster)
+
+    try:
+        dist_to_centroid = euclidean_distances(cluster_embeddings, np.array([centroid_vector])).flatten()
+        sorted_indices_local = np.argsort(dist_to_centroid)[:k_search]
+
+        nearest_image_ids_for_sheet = []
+        for local_idx in sorted_indices_local:
+            global_idx = cluster_point_indices[local_idx]
+            nearest_image_ids_for_sheet.append(all_image_ids[global_idx])
+
+    except Exception as e:
+        logger.error(f"Ошибка поиска ближайших соседей для регенерации КС {session.id}/{cluster_label_str}: {e}", exc_info=True)
+        return None
+
+    if not nearest_image_ids_for_sheet:
+        logger.warning(f"Не найдено ближайших соседей для регенерации КС {session.id}/{cluster_label_str}.")
+        return None
+
+    contact_sheet_dir_base = app_config['CONTACT_SHEET_FOLDER']
+    grid_size = app_config.get('CONTACT_SHEET_GRID_SIZE', (3, 3))
+    thumb_size = app_config.get('CONTACT_SHEET_THUMBNAIL_SIZE', (100, 100))
+    output_format = app_config.get('CONTACT_SHEET_OUTPUT_FORMAT', 'JPEG')
+
+    sheet_filename = f"cs_{session.id}_{cluster_label_str}.{output_format.lower()}"
+    session_sheet_dir = os.path.join(contact_sheet_dir_base, str(session.id))
+    sheet_full_path = os.path.join(session_sheet_dir, sheet_filename)
+
+    logger.info(f"Попытка регенерации контактного листа для {session.id}/{cluster_label_str} -> {sheet_full_path}")
+
+    if cluster_meta.contact_sheet_path and os.path.exists(cluster_meta.contact_sheet_path):
+         if cluster_meta.contact_sheet_path != sheet_full_path:
+            try:
+                os.remove(cluster_meta.contact_sheet_path)
+                logger.info(f"Удален старый файл КС: {cluster_meta.contact_sheet_path}")
+            except OSError as e:
+                logger.error(f"Не удалось удалить старый файл КС {cluster_meta.contact_sheet_path}: {e}")
+
+    success = create_contact_sheet(
+        archive_path=archive_path,
+        internal_image_paths=nearest_image_ids_for_sheet,
+        output_path=sheet_full_path,
+        grid_size=grid_size,
+        thumb_size=thumb_size,
+        format=output_format
+    )
+
+    if success:
+        cluster_meta.contact_sheet_path = sheet_full_path
+        flag_modified(cluster_meta, "contact_sheet_path")
+        logger.info(f"Контактный лист успешно регенерирован для {session.id}/{cluster_label_str}")
+        return sheet_full_path
+    else:
+        logger.error(f"Не удалось регенерировать контактный лист для {session.id}/{cluster_label_str}")
+        if cluster_meta.contact_sheet_path == sheet_full_path:
+            cluster_meta.contact_sheet_path = None
+            flag_modified(cluster_meta, "contact_sheet_path")
+        return None

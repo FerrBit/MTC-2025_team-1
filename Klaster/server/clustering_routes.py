@@ -81,15 +81,15 @@ def start_clustering():
                 archive_file = None
             else:
                  logger.info(f"Пользователь {current_user_id} предоставил валидный архив изображений: {original_archive_filename}")
+                 secure_archive_basename = secure_filename(original_archive_filename)
+                 archive_filename_for_storage = f"{uuid.uuid4()}_{secure_archive_basename}"
+                 archive_path_for_storage = os.path.join(current_app.config['UPLOAD_FOLDER'], archive_filename_for_storage)
+
 
     upload_folder = current_app.config['UPLOAD_FOLDER']
     embedding_filename_for_storage = f"{uuid.uuid4()}_{secure_filename(original_embedding_filename)}"
     embedding_file_path = os.path.join(upload_folder, embedding_filename_for_storage)
 
-    if archive_file and original_archive_filename:
-         secure_archive_basename = secure_filename(original_archive_filename)
-         archive_filename_for_storage = f"{uuid.uuid4()}_{secure_archive_basename}"
-         archive_path_for_storage = os.path.join(upload_folder, archive_filename_for_storage)
 
     files_to_cleanup = []
     try:
@@ -116,10 +116,10 @@ def start_clustering():
             user_id=int(current_user_id),
             embedding_file_path=embedding_file_path,
             archive_path=archive_path_for_storage,
+            original_archive_filename=original_archive_filename,
             algorithm=algorithm,
             params=params,
-            original_embedding_filename=original_embedding_filename,
-            original_archive_filename=original_archive_filename
+            original_embedding_filename=original_embedding_filename
         )
         logger.info(f"Пользователь {current_user_id} завершил синхронную кластеризацию. ID сессии: {session_id}")
         return jsonify({"session_id": session_id}), 201
