@@ -1,0 +1,106 @@
+.charts-card {
+    margin-bottom: 2rem;
+}
+
+.charts-main-title { /* h3 */
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.5rem;
+    font-weight: 600;
+}
+
+.charts-column-layout {
+    width: 100%;
+}
+
+.chart-wrapper {
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    padding: 1.2rem; /* Немного больше паддинг */
+    background-color: #fdfdfd;
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 2rem; /* Отступ между графиками */
+    width: 100%;
+    box-sizing: border-box;
+}
+.charts-column-layout > .chart-wrapper:last-child {
+    margin-bottom: 0; /* Убрать отступ у последнего */
+}
+
+.chart-wrapper h4 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    text-align: center;
+    font-size: 1.1rem;
+    color: #333;
+    flex-shrink: 0;
+}
+
+.chart-container {
+    position: relative;
+    width: 100%;
+    /* Высота задается inline */
+    margin-top: 0.5rem;
+    margin-bottom: 0;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 0.5rem;
+    background-color: #fff;
+    flex-grow: 1;
+    min-height: 300px; /* Минимальная высота */
+    box-sizing: border-box;
+}
+
+.graph-placeholder {
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    border: 1px dashed #ccc;
+    border-radius: 8px;
+    background-color: #f8f9fa;
+    padding: 1rem;
+    box-sizing: border-box;
+    flex-grow: 1;
+    min-height: 250px;
+    height: 300px; /* Фиксируем высоту плейсхолдера */
+}
+.graph-placeholder img {
+    max-width: 60%;
+    max-height: 100px;
+    opacity: 0.6;
+    display: block;
+    margin: 0 auto 1rem auto;
+}
+.graph-placeholder p {
+    font-size: 0.8em;
+    color: #666;
+    margin-top: 0;
+    text-align: center;
+    padding: 0 0.5rem;
+    line-height: 1.4;
+}
+
+.chart-placeholder-text {
+    text-align: center;
+    margin: 1rem 0; /* Уменьшил отступ */
+    color: #666;
+    font-style: italic;
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    padding: 1rem;
+}
+
+.chart-description {
+    font-size: 0.8em;
+    color: #666;
+    margin-top: 0.75rem;
+    text-align: center;
+    flex-shrink: 0; /* Не сжимать описание */
+}

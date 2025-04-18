@@ -1,9 +1,9 @@
-from flask_sqlalchemy import SQLAlchemy
-from flask_bcrypt import Bcrypt
-from datetime import datetime, timezone
 import json
 import uuid
 import numpy as np
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from datetime import datetime, timezone
 
 db = SQLAlchemy()
 bcrypt = Bcrypt()
@@ -33,9 +33,11 @@ class ClusteringSession(db.Model):
     algorithm = db.Column(db.String(50), nullable=True)
     params_json = db.Column(db.Text, nullable=True)
     input_file_path = db.Column(db.String(512), nullable=True)
+    original_input_filename = db.Column(db.String(255), nullable=True)
     result_message = db.Column(db.Text, nullable=True)
     num_clusters = db.Column(db.Integer, nullable=True)
     processing_time_sec = db.Column(db.Float, nullable=True)
+    scatter_data_file_path = db.Column(db.String(512), nullable=True)
 
     clusters = db.relationship('ClusterMetadata', backref='session', lazy='dynamic', cascade="all, delete-orphan")
     adjustments = db.relationship('ManualAdjustmentLog', backref='session', lazy='dynamic', cascade="all, delete-orphan")
@@ -58,6 +60,7 @@ class ClusterMetadata(db.Model):
     cluster_label = db.Column(db.String(50), nullable=False)
     original_cluster_id = db.Column(db.String(50), nullable=True)
     centroid_json = db.Column(db.Text, nullable=True)
+    centroid_2d_json = db.Column(db.Text, nullable=True)
     size = db.Column(db.Integer, nullable=True)
     contact_sheet_path = db.Column(db.String(512), nullable=True)
     metrics_json = db.Column(db.Text, nullable=True)
@@ -75,6 +78,18 @@ class ClusterMetadata(db.Model):
     def get_centroid(self):
         try:
             return np.array(json.loads(self.centroid_json)) if self.centroid_json else None
+        except json.JSONDecodeError:
+            return None
+
+    def set_centroid_2d(self, centroid_2d_coords):
+         if isinstance(centroid_2d_coords, (np.ndarray, list, tuple)) and len(centroid_2d_coords) == 2:
+             self.centroid_2d_json = json.dumps([float(c) for c in centroid_2d_coords])
+         else:
+             self.centroid_2d_json = None
+
+    def get_centroid_2d(self):
+        try:
+            return json.loads(self.centroid_2d_json) if self.centroid_2d_json else None
         except json.JSONDecodeError:
             return None
 

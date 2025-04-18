@@ -1,0 +1,67 @@
+.contact-sheets-card {
+    margin-bottom: 2rem;
+}
+
+.contact-sheets-card h3 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.5rem;
+}
+
+.contact-sheets-scroll-container {
+    max-height: 800px; 
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid #f0f0f0;
+    border-radius: 8px;
+    margin: 0 -5px -5px -5px;
+}
+
+.contact-sheets-grid-layout {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+    padding-bottom: 10px;
+}
+
+.contact-sheet-card.placeholder {
+    opacity: 0.7;
+    background: #f8f8f8;
+    border: 1px dashed #ccc;
+}
+
+.placeholder-image {
+    aspect-ratio: 3 / 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #eee;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+.placeholder-image p {
+    margin: 0;
+    color: #888;
+    text-align: center;
+    font-size: 0.9em;
+}
+
+@media (max-width: 768px) {
+  .contact-sheets-grid-layout {
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 1rem;
+  }
+  .contact-sheets-scroll-container {
+      max-height: 700px;
+  }
+}
+
+@media (max-width: 480px) {
+     .contact-sheets-grid-layout {
+        grid-template-columns: 1fr;
+     }
+    .contact-sheets-scroll-container {
+        max-height: 600px;
+    }
+}

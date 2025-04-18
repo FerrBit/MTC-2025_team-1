@@ -32,8 +32,8 @@ const Header: React.FC<HeaderProps> = ({
   return (
     <header className="header">
       <div className="header-content">
-        <h1>Система кластеризации изображений</h1>
-        <p>Класстеризация по эмбендингу</p>
+        <h1>Кластер мастер</h1>
+        <p>Кластеризация изображений</p>
       </div>
       <div className="auth-buttons">
         {isAuthenticated ? (

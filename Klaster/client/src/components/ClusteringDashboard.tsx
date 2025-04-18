@@ -1,503 +1,465 @@
-import React, { useState, useCallback, useRef, ChangeEvent, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'react-toastify';
-import ContactSheet from './ContactSheet';
-import '../styles/ClusteringDashboard.css';
-import '../styles/ContactSheet.css';
+import SessionSelector from './SessionSelector';
+import ClusteringControls from './ClusteringControls';
+import SessionDetailsDisplay from './SessionDetailsDisplay';
+import ChartsDisplay from './ChartsDisplay';
+import ContactSheetsGrid from './ContactSheetsGrid';
+import ConfirmationModal from './ConfirmationModal';
+import SplitClusterModal from './SplitClusterModal';
+import ExportControls from './ExportControls';
+import AdjustmentHistoryDisplay from './AdjustmentHistoryDisplay';
 import {
     startClustering,
     getClusteringSessions,
     getClusteringResults,
-    deleteClusterAndRecluster,
-    ClusterResult,
+    deleteAndRedistributeCluster,
+    renameCluster,
+    mergeSelectedClusters,
+    splitSelectedCluster,
     SessionResultResponse,
     SessionListItem,
     StartClusteringPayload
 } from '../services/api';
+import '../styles/ClusteringDashboard.css';
+import '../styles/ContactSheet.css';
 
 type FetchWithAuth = (url: string, options?: RequestInit) => Promise<Response>;
-
 interface ClusteringDashboardProps {
   fetchWithAuth: FetchWithAuth;
 }
 
-type Algorithm = 'kmeans' | 'dbscan';
-const ALGORITHMS: { key: Algorithm; name: string; params: string[] }[] = [
-  { key: 'kmeans', name: 'K-means', params: ['n_clusters'] },
-  { key: 'dbscan', name: 'DBSCAN', params: ['eps', 'min_samples'] },
-];
-
-interface AlgorithmParamsState {
-  n_clusters?: string;
-  eps?: string;
-  min_samples?: string;
+interface ConfirmModalArgs {
+    clusterId: string | number;
+    clusterDisplayName: string;
 }
 
+const FINAL_STATUSES = ['SUCCESS', 'FAILURE', 'RECLUSTERED', 'RECLUSTERING_FAILED'];
+const POLLING_INTERVAL_MS = 5000;
+
 const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth }) => {
-  const [clusters, setClusters] = useState<ClusterResult[]>([]);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentSessionDetails, setCurrentSessionDetails] = useState<SessionResultResponse | null>(null);
-
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isFetchingSessions, setIsFetchingSessions] = useState<boolean>(true);
   const [isFetchingResults, setIsFetchingResults] = useState<boolean>(false);
   const [isDeletingId, setIsDeletingId] = useState<string | number | null>(null);
-
+  const [isRenamingId, setIsRenamingId] = useState<string | number | null>(null);
+  const [isMerging, setIsMerging] = useState<boolean>(false);
+  const [isSplitting, setIsSplitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedAlgorithm, setSelectedAlgorithm] = useState<Algorithm | ''>('');
-  const [algorithmParams, setAlgorithmParams] = useState<AlgorithmParamsState>({});
+  const [isConfirmDeleteModalOpen, setIsConfirmDeleteModalOpen] = useState(false);
+  const [confirmDeleteArgs, setConfirmDeleteArgs] = useState<ConfirmModalArgs | null>(null);
+  const [isConfirmDeleteLoading, setIsConfirmDeleteLoading] = useState(false);
+
+  const [selectedClusterIds, setSelectedClusterIds] = useState<Set<string | number>>(new Set());
+
+  const [splitTarget, setSplitTarget] = useState<{ id: string | number; name: string; } | null>(null);
+
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const isProcessingAny = isLoading || isFetchingSessions || isFetchingResults || isConfirmDeleteLoading || isDeletingId !== null || isRenamingId !== null || isMerging || isSplitting;
+
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  const fetchSessionResults = useCallback(async (sessionId: string, isPolling = false) => {
+    if (!isPolling) {
+       setIsFetchingResults(true);
+       setError(null);
+    }
+
+    try {
+      const resultsData = await getClusteringResults(fetchWithAuth, sessionId);
+      setCurrentSessionDetails(resultsData);
+      setSessions(prevSessions =>
+          prevSessions.map(s =>
+              s.session_id === sessionId && (s.status !== resultsData.status || s.result_message !== resultsData.message || s.num_clusters !== resultsData.num_clusters)
+                  ? { ...s, status: resultsData.status, result_message: resultsData.message || s.result_message, num_clusters: resultsData.num_clusters }
+                  : s
+          )
+      );
+      if (FINAL_STATUSES.includes(resultsData.status)) {
+        stopPolling();
+      }
+    } catch (err: any) {
+      console.error(`Error ${isPolling ? 'polling' : 'fetching'} results for session ${sessionId}:`, err);
+      if (!isPolling) {
+          const errorMsg = err.message || `Не удалось загрузить результаты для сессии ${sessionId}.`;
+          setError(errorMsg);
+          toast.error(errorMsg);
+          setCurrentSessionDetails(null);
+      }
+      if (err.message?.includes('404') || err.message?.includes('401') || err.status === 404) {
+           stopPolling();
+           setCurrentSessionDetails(null);
+           setCurrentSessionId(null);
+           setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+      }
+    } finally {
+      if (!isPolling) {
+         setIsFetchingResults(false);
+      }
+    }
+  }, [fetchWithAuth, stopPolling]);
+
+
+  const startPolling = useCallback((sessionId: string) => {
+    stopPolling();
+    fetchSessionResults(sessionId, true);
+    pollingIntervalRef.current = setInterval(() => {
+      fetchSessionResults(sessionId, true);
+    }, POLLING_INTERVAL_MS);
+  }, [stopPolling, fetchSessionResults]);
 
   useEffect(() => {
-    const fetchSessions = async () => {
+    const fetchInitialSessions = async () => {
       setIsFetchingSessions(true);
       setError(null);
       try {
         const fetchedSessions = await getClusteringSessions(fetchWithAuth);
         setSessions(fetchedSessions);
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error fetching sessions:", err);
-        const errorMsg = err instanceof Error ? err.message : 'Не удалось загрузить список сессий.';
+        const errorMsg = err.message || 'Не удалось загрузить список сессий.';
         setError(errorMsg);
-        toast.error(errorMsg);
       } finally {
         setIsFetchingSessions(false);
       }
     };
-    fetchSessions();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchWithAuth]);
+    fetchInitialSessions();
+    return () => {
+        stopPolling();
+    };
+  }, [fetchWithAuth, stopPolling]);
 
   useEffect(() => {
-    if (!currentSessionId) {
-      setClusters([]);
-      setCurrentSessionDetails(null);
-      return;
-    }
-
-    const fetchResults = async () => {
-      setIsFetchingResults(true);
-      setError(null);
-      setClusters([]);
-      setCurrentSessionDetails(null);
-      console.log(`Fetching results for session: ${currentSessionId}`);
-      try {
-        const resultsData = await getClusteringResults(fetchWithAuth, currentSessionId);
-        console.log("Results data received:", resultsData);
-
-        setCurrentSessionDetails(resultsData);
-        setClusters(resultsData.clusters || []);
-
-        if (resultsData.status !== 'SUCCESS' && resultsData.status !== 'RECLUSTERED') {
-            toast.info(`Статус сессии ${currentSessionId.substring(0,8)}...: ${resultsData.status}. ${resultsData.message || resultsData.error || ''}`);
-        } else if (!resultsData.clusters || resultsData.clusters.length === 0) {
-             toast.info(`Сессия ${currentSessionId.substring(0,8)}... (${resultsData.algorithm}) завершена, но кластеры не найдены.`);
-        }
-
-      } catch (err) {
-        console.error(`Error fetching results for session ${currentSessionId}:`, err);
-        const errorMsg = err instanceof Error ? err.message : `Не удалось загрузить результаты для сессии ${currentSessionId.substring(0,8)}...`;
-        setError(errorMsg);
-        toast.error(errorMsg);
-      } finally {
-        setIsFetchingResults(false);
-      }
-    };
-
-    fetchResults();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionId, fetchWithAuth]);
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      const file = event.target.files[0];
-      if (file.name.endsWith('.parquet')) {
-          setSelectedFile(file);
-          setError(null);
-      } else {
-          setSelectedFile(null);
-          if (fileInputRef.current) {
-              fileInputRef.current.value = "";
-          }
-          toast.error("Пожалуйста, выберите файл формата .parquet");
-          setError("Неверный формат файла. Требуется .parquet");
-      }
-    } else {
-        setSelectedFile(null);
-    }
-  };
-
-  const handleAlgorithmChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    setSelectedAlgorithm(event.target.value as Algorithm | '');
-    setAlgorithmParams({});
-  };
-
-  const handleParamChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = event.target;
-    setAlgorithmParams(prevParams => ({
-      ...prevParams,
-      [name]: value
-    }));
-  };
-
-  const getRequiredParams = useCallback((): string[] => {
-       const algoConfig = ALGORITHMS.find(a => a.key === selectedAlgorithm);
-       return algoConfig ? algoConfig.params : [];
-  }, [selectedAlgorithm]);
-
-  const validateAndParseParams = useCallback((): { [key: string]: number } | null => {
-      if (!selectedAlgorithm) {
-          toast.error("Пожалуйста, выберите алгоритм кластеризации.");
-          return null;
-      }
-      const requiredParams = getRequiredParams();
-      const parsedParams: { [key: string]: number } = {};
-
-      for (const paramName of requiredParams) {
-           const valueStr = algorithmParams[paramName as keyof AlgorithmParamsState];
-           if (valueStr === undefined || valueStr === '' || valueStr === null) {
-               toast.error(`Параметр "${paramName}" для ${selectedAlgorithm.toUpperCase()} обязателен.`);
-               return null;
-           }
-           const numValue = Number(valueStr);
-           if (isNaN(numValue)) {
-               toast.error(`Параметр "${paramName}" должен быть числом.`);
-               return null;
-           }
-           if ((paramName === 'n_clusters' || paramName === 'min_samples') && numValue <= 0) {
-                toast.error(`Параметр "${paramName}" должен быть целым числом больше 0.`);
-                return null;
-           }
-           if (paramName === 'eps' && numValue <= 0) {
-               toast.error(`Параметр "${paramName}" должен быть положительным числом.`);
-               return null;
-           }
-           if ((paramName === 'n_clusters' || paramName === 'min_samples') && !Number.isInteger(numValue)){
-                toast.error(`Параметр "${paramName}" должен быть целым числом.`);
-                return null;
-           }
-
-           parsedParams[paramName] = numValue;
-      }
-      return parsedParams;
-  }, [selectedAlgorithm, algorithmParams, getRequiredParams]);
-
-
-  const handleStartClustering = useCallback(async () => {
-    if (!selectedFile) {
-        toast.error("Пожалуйста, выберите файл эмбеддингов (.parquet).");
-        return;
-    }
-    const parsedParams = validateAndParseParams();
-    if (!parsedParams) {
-        return;
-    }
-    const currentAlgorithm = selectedAlgorithm as Algorithm;
-
-    setIsLoading(true);
+    stopPolling();
+    setSelectedClusterIds(new Set());
+    setSplitTarget(null);
     setError(null);
 
-    toast.info(`Запускаем кластеризацию (${currentAlgorithm.toUpperCase()})...`);
+    if (currentSessionId) {
+      fetchSessionResults(currentSessionId).then(() => {
+         setTimeout(() => {
+             setCurrentSessionDetails(prevDetails => {
+                if (prevDetails && prevDetails.session_id === currentSessionId && !FINAL_STATUSES.includes(prevDetails.status)) {
+                     startPolling(currentSessionId);
+                }
+                return prevDetails;
+             });
+         }, 0);
+      });
+    } else {
+      setCurrentSessionDetails(null);
+    }
+    return () => {
+        stopPolling();
+    };
+  }, [currentSessionId, fetchSessionResults, startPolling, stopPolling]);
 
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+      if (sessionId !== currentSessionId) {
+          setCurrentSessionId(sessionId);
+      }
+  }, [currentSessionId]);
+
+  const handleStartClustering = useCallback(async (payload: StartClusteringPayload) => {
+    setIsLoading(true);
+    setError(null);
+    stopPolling();
+    setCurrentSessionId(null);
+    setCurrentSessionDetails(null);
+    toast.info(`Запускаем кластеризацию (${payload.algorithm.toUpperCase()})...`);
     try {
-        const payload: StartClusteringPayload = {
-            embeddingFile: selectedFile,
-            algorithm: currentAlgorithm,
-            params: parsedParams
-        };
         const response = await startClustering(fetchWithAuth, payload);
-        toast.success(`Кластеризация запущена! ID сессии: ${response.session_id.substring(0,8)}...`);
-
+        toast.success(`Кластеризация запущена! ID сессии: ${response.session_id}`);
         const newSessionItem: SessionListItem = {
-            session_id: response.session_id,
-            created_at: new Date().toISOString(),
-            status: 'STARTED',
-            algorithm: currentAlgorithm,
-            params: parsedParams,
-            num_clusters: null,
-            result_message: "Запущено...",
-            input_filename: selectedFile.name
+            session_id: response.session_id, created_at: new Date().toISOString(), status: 'STARTED',
+            algorithm: payload.algorithm, params: payload.params, num_clusters: null,
+            result_message: "Запущено...", original_filename: payload.embeddingFile.name
         };
-
         setSessions(prev => [newSessionItem, ...prev]);
         setCurrentSessionId(response.session_id);
-
-    } catch (err) {
+    } catch (err: any) {
         console.error("Clustering start error:", err);
-        const errorMsg = err instanceof Error ? err.message : 'Не удалось запустить кластеризацию.';
+        const errorMsg = err.message || 'Не удалось запустить кластеризацию.';
         setError(errorMsg);
         toast.error(`Ошибка запуска кластеризации: ${errorMsg}`);
+        throw err;
     } finally {
         setIsLoading(false);
     }
-  }, [selectedFile, selectedAlgorithm, fetchWithAuth, validateAndParseParams]);
+  }, [fetchWithAuth, stopPolling]);
 
+   const handleDeleteAndRedistributeCluster = useCallback((clusterId: string | number) => {
+    if (!currentSessionId || !currentSessionDetails) return;
+    const clusterToDelete = currentSessionDetails.clusters.find(c => String(c.id) === String(clusterId));
+    const clusterDisplayName = clusterToDelete?.name || `Кластер ${clusterId}`;
+    setConfirmDeleteArgs({ clusterId, clusterDisplayName });
+    setIsConfirmDeleteModalOpen(true);
+  }, [currentSessionId, currentSessionDetails]);
 
-   const handleDeleteClusterAndRecluster = useCallback(async (clusterLabel: string | number) => {
-    if (!currentSessionId) {
-        toast.error("Нет активной сессии для выполнения операции.");
-        return;
-    }
-    const labelToDelete = String(clusterLabel);
+  const confirmDeletion = useCallback(async () => {
+      if (!currentSessionId || !confirmDeleteArgs) return;
+      const { clusterId, clusterDisplayName } = confirmDeleteArgs;
+      setIsConfirmDeleteLoading(true);
+      setIsDeletingId(clusterId);
+      setError(null);
+      stopPolling();
+      toast.info(`Удаляем '${clusterDisplayName}' и перераспределяем...`);
+      try {
+          const response = await deleteAndRedistributeCluster(fetchWithAuth, currentSessionId, String(clusterId));
+          toast.success(response.message || `'${clusterDisplayName}' удален.`);
+          await fetchSessionResults(currentSessionId);
+      } catch (err: any) {
+          console.error(`Error deleting/redistributing cluster ${clusterId}:`, err);
+          const errorMsg = err.message || `Не удалось удалить/перераспределить '${clusterDisplayName}'.`;
+          setError(errorMsg);
+          toast.error(errorMsg);
+          fetchSessionResults(currentSessionId);
+      } finally {
+          setIsConfirmDeleteLoading(false);
+          setIsDeletingId(null);
+          setIsConfirmDeleteModalOpen(false);
+          setConfirmDeleteArgs(null);
+          setSelectedClusterIds(new Set());
+      }
+  }, [currentSessionId, confirmDeleteArgs, fetchWithAuth, stopPolling, fetchSessionResults]);
 
-    setIsDeletingId(clusterLabel);
-    setIsLoading(true);
+  const closeConfirmDeleteModal = () => {
+       setIsConfirmDeleteModalOpen(false);
+       setConfirmDeleteArgs(null);
+   };
+
+  const handleRenameCluster = useCallback(async (clusterId: string | number, newName: string): Promise<boolean> => {
+    if (!currentSessionId) { toast.error("Нет активной сессии."); return false; }
+    const clusterToRename = currentSessionDetails?.clusters.find(c => String(c.id) === String(clusterId));
+    const oldDisplayName = clusterToRename?.name || `Кластер ${clusterId}`;
+    setIsRenamingId(clusterId);
     setError(null);
-    console.log(`Requesting delete/recluster for cluster ${labelToDelete} in session ${currentSessionId}`);
-    toast.info(`Удаляем кластер ${labelToDelete} и запускаем рекластеризацию...`);
-
+    let success = false;
     try {
-        const response = await deleteClusterAndRecluster(fetchWithAuth, currentSessionId, labelToDelete);
-        toast.success(`Кластер ${labelToDelete} удален. Создана новая сессия: ${response.new_session_id.substring(0,8)}...`);
-        console.log("Recluster response:", response);
-
-        const originalSession = sessions.find(s => s.session_id === currentSessionId);
-
-        const newSessionItem: SessionListItem = {
-            session_id: response.new_session_id,
-            created_at: new Date().toISOString(),
-            status: 'STARTED',
-            algorithm: originalSession?.algorithm || '',
-            params: originalSession?.params || {},
-            num_clusters: null,
-            result_message: "Рекластеризация завершена, загрузка...",
-            input_filename: originalSession?.input_filename || "N/A"
-        };
-
-        setSessions(prev => [
-            newSessionItem,
-            ...prev.map(s =>
-                s.session_id === currentSessionId ? { ...s, status: 'RECLUSTERED' } : s
-            )
-        ]);
-        setCurrentSessionId(response.new_session_id);
-
-    } catch (err) {
-        console.error(`Error deleting/re-clustering cluster ${labelToDelete}:`, err);
-        const errorMsg = err instanceof Error ? err.message : `Не удалось удалить кластер ${labelToDelete}.`;
+        await renameCluster(fetchWithAuth, currentSessionId, clusterId, newName);
+        toast.success(`Кластер '${oldDisplayName}' переименован.`);
+        await fetchSessionResults(currentSessionId);
+        success = true;
+    } catch (err: any) {
+        console.error(`Error renaming cluster ${clusterId}:`, err);
+        const errorMsg = err.message || `Не удалось переименовать '${oldDisplayName}'.`;
         setError(errorMsg);
         toast.error(errorMsg);
+        success = false;
     } finally {
-        setIsDeletingId(null);
-        setIsLoading(false);
+        setIsRenamingId(null);
     }
-  }, [currentSessionId, fetchWithAuth, sessions]);
+    return success;
+  }, [currentSessionId, currentSessionDetails, fetchWithAuth, fetchSessionResults]);
 
-  const startButtonText = `Запустить ${selectedAlgorithm ? selectedAlgorithm.toUpperCase() : 'кластеризацию'}`;
-  const isProcessing = isLoading || isFetchingSessions || isFetchingResults || isDeletingId !== null;
-  const requiredParams = getRequiredParams();
+  const handleToggleClusterSelection = useCallback((clusterId: string | number) => {
+      setSelectedClusterIds(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(clusterId)) {
+              newSet.delete(clusterId);
+          } else {
+              newSet.add(clusterId);
+          }
+          return newSet;
+      });
+  }, []);
+
+  const handleMergeClick = useCallback(async () => {
+      if (!currentSessionId || selectedClusterIds.size < 2) return;
+      setIsMerging(true);
+      setError(null);
+      stopPolling();
+      const idsToMerge = Array.from(selectedClusterIds);
+      toast.info(`Слияние кластеров: ${idsToMerge.join(', ')}...`);
+      try {
+          const response = await mergeSelectedClusters(fetchWithAuth, currentSessionId, idsToMerge);
+          toast.success(response.message || `Кластеры слиты.`);
+          await fetchSessionResults(currentSessionId);
+          setSelectedClusterIds(new Set());
+      } catch (err: any)
+       {
+           console.error(`Error merging clusters ${idsToMerge}:`, err);
+           const errorMsg = err.message || `Не удалось слить кластеры.`;
+           setError(errorMsg);
+           toast.error(errorMsg);
+           fetchSessionResults(currentSessionId);
+       } finally {
+          setIsMerging(false);
+      }
+  }, [currentSessionId, selectedClusterIds, fetchWithAuth, stopPolling, fetchSessionResults]);
+
+   const handleInitiateSplit = useCallback((clusterId: string | number) => {
+        if (!currentSessionDetails) return;
+        const clusterToSplit = currentSessionDetails.clusters.find(c => String(c.id) === String(clusterId));
+        if (clusterToSplit) {
+             setSplitTarget({ id: clusterId, name: clusterToSplit.name || `Кластер ${clusterId}` });
+        }
+   }, [currentSessionDetails]);
+
+   const handleCancelSplit = useCallback(() => {
+       setSplitTarget(null);
+   }, []);
+
+   const handleConfirmSplit = useCallback(async (numSplits: number) => {
+        if (!currentSessionId || !splitTarget) return;
+        setIsSplitting(true);
+        setError(null);
+        stopPolling();
+        toast.info(`Разделение кластера '${splitTarget.name}' на ${numSplits} части...`);
+        try {
+            const response = await splitSelectedCluster(fetchWithAuth, currentSessionId, splitTarget.id, numSplits);
+            toast.success(response.message || `Кластер разделен.`);
+            setSplitTarget(null);
+            await fetchSessionResults(currentSessionId);
+        } catch (err: any) {
+             console.error(`Error splitting cluster ${splitTarget.id}:`, err);
+             const errorMsg = err.message || `Не удалось разделить кластер.`;
+             setError(errorMsg);
+             toast.error(errorMsg);
+             setSplitTarget(null);
+             fetchSessionResults(currentSessionId);
+         } finally {
+            setIsSplitting(false);
+        }
+   }, [currentSessionId, splitTarget, fetchWithAuth, stopPolling, fetchSessionResults]);
+
+  const canAdjustClusters = currentSessionDetails?.status === 'SUCCESS' || currentSessionDetails?.status === 'RECLUSTERED';
+  const overallDisabled = isProcessingAny || !canAdjustClusters;
 
   return (
     <div className="clustering-dashboard">
       <h2>Панель управления кластеризацией</h2>
 
-      <div className="card sessions-card" style={{marginBottom: '2rem'}}>
-          <h3>Сессии кластеризации</h3>
-          {isFetchingSessions && <p>Загрузка списка сессий...</p>}
-          {!isFetchingSessions && sessions.length === 0 && (
-              <p>Нет доступных сессий. Запустите новую кластеризацию ниже.</p>
-           )}
-          {!isFetchingSessions && sessions.length > 0 && (
-              <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #eee', padding: '0.5rem', borderRadius: '8px' }}>
-                  {sessions.map(session => (
-                      <div key={session.session_id} style={{
-                          padding: '8px 12px',
-                          marginBottom: '5px',
-                          border: `1px solid ${currentSessionId === session.session_id ? '#007bff' : '#ddd'}`,
-                          borderRadius: '6px',
-                          cursor: isProcessing ? 'not-allowed' : 'pointer',
-                          backgroundColor: currentSessionId === session.session_id ? '#e7f3ff' : '#fff',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          opacity: isProcessing && currentSessionId !== session.session_id ? 0.6 : 1,
-                          transition: 'background-color 0.2s ease, border-color 0.2s ease'
-                      }}
-                           onClick={() => !isProcessing && setCurrentSessionId(session.session_id)}
-                           title={`Выбрать сессию ${session.session_id.substring(0,8)}...`}
-                           >
-                           <span style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '10px'}}>
-                              ID: {session.session_id.substring(0, 8)}... ({session.algorithm.toUpperCase()}) | {session.input_filename} | {new Date(session.created_at).toLocaleString()}
-                           </span>
-                          <span style={{fontWeight: 500, fontSize: '0.85em', padding: '3px 8px', borderRadius: '4px', backgroundColor: '#f0f0f0', whiteSpace: 'nowrap'}}>
-                            {session.status}
-                          </span>
-                      </div>
-                  ))}
-              </div>
-          )}
-           {error && !isFetchingSessions && sessions.length === 0 && <p className="error-message" style={{ marginTop: '0.5rem' }}>{error}</p>}
-      </div>
+      <SessionSelector
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onSelectSession={handleSelectSession}
+        disabled={isProcessingAny}
+        isLoading={isFetchingSessions}
+        error={error && !currentSessionId ? error : null}
+      />
 
+      <ClusteringControls
+        onStartClustering={handleStartClustering}
+        disabled={isProcessingAny}
+      />
 
-      <div className="card controls-card">
-        <h3>Запуск новой кластеризации</h3>
-        <div className="clustering-controls">
-            <div className="file-upload-wrapper">
-                 <label htmlFor="parquet-upload" className="file-upload-label">
-                     1. Загрузить файл .parquet:
-                 </label>
-                <input
-                    type="file" id="parquet-upload" className="file-input"
-                    accept=".parquet" onChange={handleFileChange} ref={fileInputRef}
-                    disabled={isProcessing} aria-describedby="file-status-info"
-                />
-            </div>
-
-             <div className="form-group algo-select-group">
-                <label htmlFor="algorithm-select">2. Выбрать алгоритм:</label>
-                <select
-                    id="algorithm-select" value={selectedAlgorithm}
-                    onChange={handleAlgorithmChange} disabled={isProcessing}
-                    className="algo-select" required={selectedFile !== null}
-                >
-                    <option value="" disabled>-- Выберите алгоритм --</option>
-                    {ALGORITHMS.map(algo => (
-                        <option key={algo.key} value={algo.key}>{algo.name}</option>
-                    ))}
-                </select>
-            </div>
-
-            <button
-              className="primary-btn start-clustering-btn"
-              onClick={handleStartClustering}
-              disabled={isProcessing || !selectedFile || !selectedAlgorithm}
-              title={!selectedFile ? "Сначала выберите файл" : !selectedAlgorithm ? "Выберите алгоритм" : startButtonText}
-            >
-              {isLoading ? 'Запуск...' : `3. ${startButtonText}`}
-            </button>
-
-            {selectedAlgorithm && (
-                 <div className="algorithm-params">
-                     <label>
-                       Параметры для {ALGORITHMS.find(a => a.key === selectedAlgorithm)?.name}:
-                    </label>
-                    {requiredParams.map(paramName => (
-                        <div className="form-group param-group" key={paramName}>
-                           <label htmlFor={`param-${paramName}`}>{paramName}:</label>
-                            <input
-                                type="number" id={`param-${paramName}`} name={paramName}
-                                value={algorithmParams[paramName as keyof AlgorithmParamsState] ?? ''}
-                                onChange={handleParamChange} disabled={isProcessing}
-                                step={paramName === 'eps' ? '0.01' : '1'}
-                                min={paramName === 'eps' ? '0.01' : '1'}
-                                required
-                                className="param-input"
-                            />
-                        </div>
-                    ))}
-                 </div>
-            )}
-        </div>
-
-        <div id="file-status-info" className="status-messages">
-            {selectedFile && !isLoading && (
-                <p className="file-status-info">Выбран файл: {selectedFile.name}</p>
-            )}
-            {!selectedFile && !isLoading && (
-                 <p className="file-status-info">Файл не выбран.</p>
-            )}
-             {!selectedAlgorithm && selectedFile && !isLoading && (
-                 <p className="file-status-info" style={{ color: '#dc3545' }}>Алгоритм не выбран.</p>
-             )}
-             {error && isLoading && <p className="error-message">{error}</p>}
-        </div>
-      </div>
-
-      {isFetchingResults && (
-        <div className="card status-card">
-          <p>Загрузка результатов для сессии {currentSessionId?.substring(0,8)}...</p>
-        </div>
+      {currentSessionId && isFetchingResults && !pollingIntervalRef.current && (
+        <div className="card status-card"> <p>Загрузка результатов для сессии {currentSessionId.substring(0,8)}...</p> </div>
       )}
-
-       {currentSessionId && !isFetchingResults && (
-           <>
-               {currentSessionDetails ? (
-                   <>
-                       <div className="card metrics-card">
-                           <h3>Результаты сессии: {currentSessionId.substring(0, 8)}...</h3>
-                           <p>Алгоритм: {currentSessionDetails.algorithm.toUpperCase()}</p>
-                           <p>Статус: {currentSessionDetails.status}</p>
-                           <p>Параметры: {JSON.stringify(currentSessionDetails.params)}</p>
-                           {currentSessionDetails.input_filename && <p>Входной файл: {currentSessionDetails.input_filename}</p> }
-                           {currentSessionDetails.num_clusters !== null && <p>Найдено кластеров: {currentSessionDetails.num_clusters}</p>}
-                           {clusters.length > 0 && <p>Средний размер кластера: {(clusters.reduce((sum, c) => sum + c.size, 0) / clusters.length).toFixed(0)}</p>}
-                           {currentSessionDetails.processing_time_sec !== null && <p>Время обработки: {currentSessionDetails.processing_time_sec.toFixed(2)} сек.</p>}
-                            {currentSessionDetails.message && <p>Сообщение: {currentSessionDetails.message}</p>}
-                            {currentSessionDetails.error && <p className="error-message">Ошибка сессии: {currentSessionDetails.error}</p>}
-
-
-                            <div className="graph-placeholder" style={{marginTop: '1rem'}}>
-                               <img src={`https://placehold.co/600x300/E8E8E8/A9A9A9?text=График+распределения+(${currentSessionDetails.algorithm?.toUpperCase()})`} alt="Placeholder Graph" />
-                           </div>
-                           <h4>Ручная корректировка (Placeholder)</h4>
-                           <p>Здесь будут элементы для объединения, разделения, переименования кластеров.</p>
-                           <button className="secondary-btn" disabled>Объединить</button>
-                           <button className="secondary-btn" disabled style={{ marginLeft: '10px' }}>Разделить</button>
-                           <button className="secondary-btn" disabled style={{ marginLeft: '10px' }}>Переименовать</button>
-                       </div>
-
-                       {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && clusters.length > 0 && (
-                          <div className="card contact-sheets-card">
-                            <h3>Контактные отпечатки ({clusters.length} шт.)</h3>
-                            <div className="contact-sheets-grid">
-                              {clusters.map(cluster => cluster.contactSheetUrl ? (
-                                <ContactSheet
-                                  key={cluster.id}
-                                  clusterId={cluster.id}
-                                  imageUrl={cluster.contactSheetUrl}
-                                  clusterSize={cluster.size}
-                                  onDelete={handleDeleteClusterAndRecluster}
-                                  isDeleting={isDeletingId === cluster.id || currentSessionDetails.status === 'RECLUSTERED'}
-                                />
-                              ) : (
-                                <div key={cluster.id} className="contact-sheet-card" style={{opacity: 0.7, background: '#f8f8f8'}}>
-                                   <h4>Кластер {cluster.id}</h4>
-                                   <div style={{aspectRatio: '3/2', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#eee', borderRadius: '6px', marginBottom: '1rem'}}>
-                                       <p style={{margin: 0, color: '#888', textAlign: 'center', fontSize: '0.9em'}}>Нет<br/>отпечатка</p>
-                                    </div>
-                                    <p>Размер: {cluster.size} изображений</p>
-                                     <button className="secondary-btn delete-sheet-btn" disabled>Удаление недоступно</button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                       )}
-
-                       {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && clusters.length === 0 && (
-                            <div className="card status-card">
-                                 <p>Кластеризация для сессии {currentSessionId.substring(0,8)}... ({currentSessionDetails.algorithm}) завершена, но не найдено кластеров для отображения.</p>
-                            </div>
-                        )}
-
-                         {currentSessionDetails.status !== 'SUCCESS' && currentSessionDetails.status !== 'RECLUSTERED' && currentSessionDetails.status !== 'STARTED' && (
-                             <div className="card status-card">
-                                 <p>Статус сессии {currentSessionId.substring(0,8)}...: {currentSessionDetails.status}.</p>
-                                 {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
-                                 {currentSessionDetails.error && <p className="error-message">{currentSessionDetails.error}</p>}
-                                 <p>Результаты не могут быть отображены.</p>
-                             </div>
-                         )}
-
-                   </>
-               ) : (
-                   error && <div className="card status-card error-message"><p>{error}</p></div>
-               )}
-           </>
+      {currentSessionId && !isFetchingResults && !currentSessionDetails && error && (
+           <div className="card status-card error-message"><p>Ошибка загрузки результатов: {error}</p></div>
        )}
 
-        {!currentSessionId && !isProcessing && sessions.length > 0 && (
-            <div className="card status-card">
-                 <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p>
-            </div>
-        )}
-         {!currentSessionId && !isProcessing && sessions.length === 0 && !isFetchingSessions && (
-             <div className="card status-card">
-                  <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p>
-             </div>
-         )}
+      {currentSessionId && currentSessionDetails && (
+          <>
+              <SessionDetailsDisplay details={currentSessionDetails} />
+
+              <ExportControls
+                    sessionId={currentSessionId}
+                    fetchWithAuth={fetchWithAuth}
+                    disabled={isProcessingAny}
+                    sessionStatus={currentSessionDetails.status}
+              />
+
+              {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED' || currentSessionDetails.status === 'PROCESSING') && (
+                  <ChartsDisplay
+                      details={currentSessionDetails}
+                      sessionId={currentSessionId}
+                  />
+              )}
+
+              {canAdjustClusters && currentSessionDetails.clusters.length > 0 && (
+                  <div className="card" style={{ padding: '1rem', marginBottom: '1rem', textAlign: 'center' }}>
+                      <button
+                          className="primary-btn"
+                          onClick={handleMergeClick}
+                          disabled={selectedClusterIds.size < 2 || overallDisabled}
+                          title={selectedClusterIds.size < 2 ? "Выберите 2 или более кластера для слияния" : (overallDisabled ? "Операция недоступна" : "Слить выбранные кластеры")}
+                      >
+                          Слить выбранные ({selectedClusterIds.size})
+                      </button>
+                  </div>
+              )}
+
+               {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && (
+                  <ContactSheetsGrid
+                    clusters={currentSessionDetails.clusters || []}
+                    sessionId={currentSessionId}
+                    onRedistribute={handleDeleteAndRedistributeCluster}
+                    onRename={handleRenameCluster}
+                    isDeletingId={isDeletingId}
+                    disabled={overallDisabled}
+                    status={currentSessionDetails.status}
+                    selectedIds={selectedClusterIds}
+                    onToggleSelection={handleToggleClusterSelection}
+                    onInitiateSplit={handleInitiateSplit}
+                  />
+              )}
+
+              {/* Display Adjustment History */}
+              {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && currentSessionDetails.adjustments && (
+                <AdjustmentHistoryDisplay
+                    adjustments={currentSessionDetails.adjustments}
+                    sessionId={currentSessionId}
+                />
+              )}
+
+               {currentSessionDetails.status !== 'SUCCESS' && currentSessionDetails.status !== 'RECLUSTERED' && currentSessionDetails.status !== 'PROCESSING' && (
+                 <div className="card status-card">
+                     <p>Статус сессии {currentSessionId.substring(0,8)}...: <strong>{currentSessionDetails.status}</strong>.</p>
+                     {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
+                     {currentSessionDetails.error && <p className="error-message">{currentSessionDetails.error}</p>}
+                     <p>Результаты не могут быть отображены или изменены в данный момент.</p>
+                 </div>
+              )}
+              {currentSessionDetails.status === 'PROCESSING' && !isFetchingResults && (
+                   <div className="card status-card">
+                       <p>Сессия {currentSessionId.substring(0,8)}... обрабатывается. Статус будет обновлен автоматически.</p>
+                       {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
+                   </div>
+              )}
+          </>
+       )}
+
+       {!currentSessionId && !isProcessingAny && sessions.length > 0 && ( <div className="card status-card"> <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p> </div> )}
+       {!currentSessionId && !isProcessingAny && sessions.length === 0 && !isFetchingSessions && !error && ( <div className="card status-card"> <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p> </div> )}
+
+        <ConfirmationModal
+            isOpen={isConfirmDeleteModalOpen}
+            onClose={closeConfirmDeleteModal}
+            onConfirm={confirmDeletion}
+            title="Подтверждение удаления"
+            message={
+                confirmDeleteArgs ? (
+                    <>Вы уверены, что хотите удалить <br /><strong>'{confirmDeleteArgs.clusterDisplayName}'</strong>?<br />Его точки будут перераспределены. Это действие необратимо.</>
+                ) : ('Подтвердите действие.')
+            }
+            confirmText="Удалить и перераспределить"
+            cancelText="Отмена"
+            confirmButtonClass="danger-btn"
+            isLoading={isConfirmDeleteLoading}
+        />
+
+        <SplitClusterModal
+            isOpen={splitTarget !== null}
+            onClose={handleCancelSplit}
+            onConfirm={handleConfirmSplit}
+            clusterId={splitTarget?.id ?? null}
+            clusterDisplayName={splitTarget?.name ?? ''}
+            isLoading={isSplitting}
+        />
 
     </div>
   );

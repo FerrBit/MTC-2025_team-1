@@ -67,25 +67,27 @@ const App = () => {
     useEffect(() => {
         const tokenFromStorage = localStorage.getItem('authToken');
         if (tokenFromStorage) {
-            setAuthToken(tokenFromStorage);
+            if (!authToken) {
+                setAuthToken(tokenFromStorage);
+            }
         } else {
             setAuthLoading(false);
         }
-    }, []);
+    }, [authToken]);
+
 
     useEffect(() => {
-        if (authToken && !isAuthenticated && !authLoading) {
-            setAuthLoading(true);
-            fetchWithAuth('/api/me')
+        if (authToken && !isAuthenticated) {
+             if (!authLoading) { setAuthLoading(true); }
+
+             fetchWithAuth('/api/me')
                 .then(async response => {
                     if (response.status === 401) {
-                        console.warn("Token validation returned 401.");
                         handleLogout();
                         return null;
                     }
                     if (!response.ok) {
                          const errorData = await response.json().catch(() => ({}));
-                         console.error("Error response from /api/me:", response.status, errorData);
                          throw new Error(errorData.error || `Ошибка проверки токена: ${response.status}`);
                     }
                     return response.json();
@@ -94,10 +96,8 @@ const App = () => {
                     if (data && data.user) {
                         setCurrentUser(data.user);
                         setIsAuthenticated(true);
-                        console.log("User authenticated via token:", data.user);
                     } else if (data !== null) {
                          handleLogout();
-                         console.warn("/api/me responded OK but data was invalid or null after 401 handling.");
                     }
                 })
                 .catch((err) => {
@@ -109,13 +109,13 @@ const App = () => {
                 .finally(() => {
                     setAuthLoading(false);
                 });
-        } else if (!authToken) {
-             if(isAuthenticated) handleLogout();
+        } else if (!authToken && isAuthenticated) {
+             handleLogout();
+             setAuthLoading(false);
+        } else if (!authToken && !isAuthenticated && authLoading) {
              setAuthLoading(false);
         }
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [authToken, isAuthenticated]);
+    }, [authToken, isAuthenticated, fetchWithAuth, handleLogout, authLoading]);
 
     const handleRegister = async (formData: AuthFormData) => {
         const response = await fetch('/api/register', {
@@ -147,8 +147,8 @@ const App = () => {
         }
         localStorage.setItem('authToken', data.access_token);
         setAuthToken(data.access_token);
-        setIsAuthenticated(false);
-        setAuthLoading(true);
+        setCurrentUser(data.user);
+        setIsAuthenticated(true);
         setIsLoginOpen(false);
         toast.success(`Добро пожаловать, ${data.user.username}!`);
     };
@@ -161,7 +161,7 @@ const App = () => {
         setIsRegisterOpen(false);
     };
 
-    if (authLoading) {
+    if (authLoading && !isAuthenticated) {
         return <div style={{ textAlign: 'center', margin: '4rem 0', fontSize: '1.2em' }}>Проверка авторизации...</div>;
     }
 

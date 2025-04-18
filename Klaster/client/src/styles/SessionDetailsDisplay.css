@@ -1,0 +1,43 @@
+.session-details-card {
+    margin-bottom: 2rem;
+}
+
+.session-details-card h3 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.5rem;
+    font-size: 1.3rem;
+    word-break: break-all;
+}
+
+.details-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.6rem 1rem;
+    font-size: 0.95em;
+    margin-bottom: 1rem;
+}
+
+.details-grid span {
+    color: #555;
+    text-align: right;
+}
+
+.details-grid strong {
+    word-break: break-word;
+}
+
+.session-message {
+    font-size: 0.9em;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed #eee;
+}
+
+.session-error {
+     margin-top: 1rem;
+     padding-top: 1rem;
+     border-top: 1px dashed #ffdddd;
+     font-size: 0.9em;
+}
