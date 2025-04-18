@@ -4,10 +4,11 @@ from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from config import Config
-from auth_routes import register_auth_routes
-from clustering_routes import register_clustering_routes
 from models import db, bcrypt
 from logging_config import setup_logging
+from auth_routes import register_auth_routes
+from clustering_routes import register_clustering_routes
+
 
 app = Flask(__name__)
 app.config.from_object(Config)

@@ -39,7 +39,9 @@ const App = () => {
 
     const fetchWithAuth = useCallback(async (url: string, options: RequestInit = {}) => {
         const headers = new Headers(options.headers || {});
-        headers.set('Content-Type', 'application/json');
+        if (!(options.body instanceof FormData)) {
+             headers.set('Content-Type', 'application/json');
+        }
 
         if (authToken) {
             headers.set('Authorization', `Bearer ${authToken}`);
@@ -57,7 +59,6 @@ const App = () => {
                  handleLogout();
                  toast.error('Сессия истекла или недействительна. Пожалуйста, войдите снова.');
             }
-            throw new Error('Unauthorized or Session Expired');
         }
 
         return response;
@@ -66,20 +67,27 @@ const App = () => {
     useEffect(() => {
         const tokenFromStorage = localStorage.getItem('authToken');
         if (tokenFromStorage) {
-            setAuthToken(tokenFromStorage);
+            if (!authToken) {
+                setAuthToken(tokenFromStorage);
+            }
         } else {
             setAuthLoading(false);
         }
-    }, []);
+    }, [authToken]);
+
 
     useEffect(() => {
         if (authToken && !isAuthenticated) {
-            setAuthLoading(true);
-            fetchWithAuth('/api/me')
+             if (!authLoading) { setAuthLoading(true); }
+
+             fetchWithAuth('/api/me')
                 .then(async response => {
+                    if (response.status === 401) {
+                        handleLogout();
+                        return null;
+                    }
                     if (!response.ok) {
                          const errorData = await response.json().catch(() => ({}));
-                         console.error("Error response from /api/me:", response.status, errorData);
                          throw new Error(errorData.error || `Ошибка проверки токена: ${response.status}`);
                     }
                     return response.json();
@@ -88,27 +96,26 @@ const App = () => {
                     if (data && data.user) {
                         setCurrentUser(data.user);
                         setIsAuthenticated(true);
-                        console.log("User authenticated via token:", data.user);
-                    } else {
+                    } else if (data !== null) {
                          handleLogout();
-                         console.warn("/api/me responded OK but data was invalid.");
                     }
                 })
                 .catch((err) => {
-                     if (!(err.message && err.message.includes('Unauthorized or Session Expired'))) {
-                         console.error("Error validating token or fetching user data:", err);
-                         handleLogout();
+                     if (!(err.message && err.message.includes('Ошибка проверки токена: 401'))) {
+                       console.error("Error validating token or fetching user data:", err);
                      }
+                     handleLogout();
                 })
                 .finally(() => {
                     setAuthLoading(false);
                 });
-        } else if (!authToken) {
-             if(isAuthenticated) handleLogout();
+        } else if (!authToken && isAuthenticated) {
+             handleLogout();
+             setAuthLoading(false);
+        } else if (!authToken && !isAuthenticated && authLoading) {
              setAuthLoading(false);
         }
-
-    }, [authToken, fetchWithAuth, handleLogout, isAuthenticated]);
+    }, [authToken, isAuthenticated, fetchWithAuth, handleLogout, authLoading]);
 
     const handleRegister = async (formData: AuthFormData) => {
         const response = await fetch('/api/register', {
@@ -140,6 +147,8 @@ const App = () => {
         }
         localStorage.setItem('authToken', data.access_token);
         setAuthToken(data.access_token);
+        setCurrentUser(data.user);
+        setIsAuthenticated(true);
         setIsLoginOpen(false);
         toast.success(`Добро пожаловать, ${data.user.username}!`);
     };
@@ -152,7 +161,7 @@ const App = () => {
         setIsRegisterOpen(false);
     };
 
-    if (authLoading) {
+    if (authLoading && !isAuthenticated) {
         return <div style={{ textAlign: 'center', margin: '4rem 0', fontSize: '1.2em' }}>Проверка авторизации...</div>;
     }
 
@@ -184,7 +193,7 @@ const App = () => {
                  </p>
               </div>
           ) : (
-              <ClusteringDashboard />
+              <ClusteringDashboard fetchWithAuth={fetchWithAuth} />
           )}
 
             <AuthModal

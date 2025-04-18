@@ -1,364 +1,466 @@
-import React, { useState, useCallback, useRef, ChangeEvent, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { toast } from 'react-toastify';
-import ContactSheet from './ContactSheet';
+import SessionSelector from './SessionSelector';
+import ClusteringControls from './ClusteringControls';
+import SessionDetailsDisplay from './SessionDetailsDisplay';
+import ChartsDisplay from './ChartsDisplay';
+import ContactSheetsGrid from './ContactSheetsGrid';
+import ConfirmationModal from './ConfirmationModal';
+import SplitClusterModal from './SplitClusterModal';
+import ExportControls from './ExportControls';
+import AdjustmentHistoryDisplay from './AdjustmentHistoryDisplay';
+import {
+    startClustering,
+    getClusteringSessions,
+    getClusteringResults,
+    deleteAndRedistributeCluster,
+    renameCluster,
+    mergeSelectedClusters,
+    splitSelectedCluster,
+    SessionResultResponse,
+    SessionListItem,
+    StartClusteringPayload
+} from '../services/api';
 import '../styles/ClusteringDashboard.css';
 import '../styles/ContactSheet.css';
 
-interface ClusterData {
-  id: string | number;
-  contactSheetUrl: string;
-  size: number;
+type FetchWithAuth = (url: string, options?: RequestInit) => Promise<Response>;
+interface ClusteringDashboardProps {
+  fetchWithAuth: FetchWithAuth;
 }
 
-type Algorithm = 'kmeans' | 'dbscan';
-const ALGORITHMS: { key: Algorithm; name: string; params: string[] }[] = [
-  { key: 'kmeans', name: 'K-means', params: ['n_clusters'] },
-  { key: 'dbscan', name: 'DBSCAN', params: ['eps', 'min_samples'] },
-];
-
-interface AlgorithmParams {
-  n_clusters?: number | string;
-  eps?: number | string;
-  min_samples?: number | string;
+interface ConfirmModalArgs {
+    clusterId: string | number;
+    clusterDisplayName: string;
 }
 
-const generateMockClusters = (count: number, algorithm: Algorithm, params: AlgorithmParams): ClusterData[] => {
-    let finalCount = count;
-    if (algorithm === 'kmeans' && params.n_clusters && typeof params.n_clusters === 'number' && params.n_clusters > 0) {
-        finalCount = params.n_clusters;
-    } else if (algorithm === 'dbscan') {
-        const epsFactor = (typeof params.eps === 'number' && params.eps > 0) ? (1 / params.eps) : 1;
-        const samplesFactor = (typeof params.min_samples === 'number' && params.min_samples > 0) ? params.min_samples : 5;
-        finalCount = Math.max(2, Math.min(15, Math.floor(count * epsFactor * 0.1 + samplesFactor * 0.5)));
-    }
+const FINAL_STATUSES = ['SUCCESS', 'FAILURE', 'RECLUSTERED', 'RECLUSTERING_FAILED'];
+const POLLING_INTERVAL_MS = 5000;
 
-    console.log(`Simulating generation of ${finalCount} clusters using ${algorithm}`);
-
-    return Array.from({ length: finalCount }, (_, i) => ({
-        id: `${algorithm.substring(0,1).toUpperCase()}${i + 1}`,
-        contactSheetUrl: `https://placehold.co/300x200/EEE/31343C?text=${algorithm}+${i + 1}\\nContact+Sheet`,
-        size: Math.floor(Math.random() * (algorithm === 'kmeans' ? 300 : 400)) + (algorithm === 'dbscan' ? 20 : 50),
-    }));
-};
-
-
-const ClusteringDashboard: React.FC = () => {
-  const [clusters, setClusters] = useState<ClusterData[]>([]);
+const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth }) => {
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [currentSessionDetails, setCurrentSessionDetails] = useState<SessionResultResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isFetchingSessions, setIsFetchingSessions] = useState<boolean>(true);
+  const [isFetchingResults, setIsFetchingResults] = useState<boolean>(false);
   const [isDeletingId, setIsDeletingId] = useState<string | number | null>(null);
-  const [clusteringInitiated, setClusteringInitiated] = useState<boolean>(false);
+  const [isRenamingId, setIsRenamingId] = useState<string | number | null>(null);
+  const [isMerging, setIsMerging] = useState<boolean>(false);
+  const [isSplitting, setIsSplitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [selectedAlgorithm, setSelectedAlgorithm] = useState<Algorithm | ''>('');
-  const [algorithmParams, setAlgorithmParams] = useState<AlgorithmParams>({});
+  const [isConfirmDeleteModalOpen, setIsConfirmDeleteModalOpen] = useState(false);
+  const [confirmDeleteArgs, setConfirmDeleteArgs] = useState<ConfirmModalArgs | null>(null);
+  const [isConfirmDeleteLoading, setIsConfirmDeleteLoading] = useState(false);
 
-   useEffect(() => {
-        setAlgorithmParams({});
-   }, [selectedAlgorithm]);
+  const [selectedClusterIds, setSelectedClusterIds] = useState<Set<string | number>>(new Set());
 
+  const [splitTarget, setSplitTarget] = useState<{ id: string | number; name: string; } | null>(null);
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      const file = event.target.files[0];
-      if (file.name.endsWith('.parquet')) {
-          setSelectedFile(file);
-          setError(null);
-      } else {
-          setSelectedFile(null);
-          if (fileInputRef.current) {
-              fileInputRef.current.value = "";
-          }
-          toast.error("Пожалуйста, выберите файл формата .parquet");
-          setError("Неверный формат файла. Требуется .parquet");
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const isProcessingAny = isLoading || isFetchingSessions || isFetchingResults || isConfirmDeleteLoading || isDeletingId !== null || isRenamingId !== null || isMerging || isSplitting;
+
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  const fetchSessionResults = useCallback(async (sessionId: string, isPolling = false) => {
+    if (!isPolling) {
+       setIsFetchingResults(true);
+       setError(null);
+    }
+
+    try {
+      const resultsData = await getClusteringResults(fetchWithAuth, sessionId);
+      setCurrentSessionDetails(resultsData);
+      setSessions(prevSessions =>
+          prevSessions.map(s =>
+              s.session_id === sessionId && (s.status !== resultsData.status || s.result_message !== resultsData.message || s.num_clusters !== resultsData.num_clusters)
+                  ? { ...s, status: resultsData.status, result_message: resultsData.message || s.result_message, num_clusters: resultsData.num_clusters }
+                  : s
+          )
+      );
+      if (FINAL_STATUSES.includes(resultsData.status)) {
+        stopPolling();
       }
+    } catch (err: any) {
+      console.error(`Error ${isPolling ? 'polling' : 'fetching'} results for session ${sessionId}:`, err);
+      if (!isPolling) {
+          const errorMsg = err.message || `Не удалось загрузить результаты для сессии ${sessionId}.`;
+          setError(errorMsg);
+          toast.error(errorMsg);
+          setCurrentSessionDetails(null);
+      }
+      if (err.message?.includes('404') || err.message?.includes('401') || err.status === 404) {
+           stopPolling();
+           setCurrentSessionDetails(null);
+           setCurrentSessionId(null);
+           setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+      }
+    } finally {
+      if (!isPolling) {
+         setIsFetchingResults(false);
+      }
+    }
+  }, [fetchWithAuth, stopPolling]);
+
+
+  const startPolling = useCallback((sessionId: string) => {
+    stopPolling();
+    fetchSessionResults(sessionId, true);
+    pollingIntervalRef.current = setInterval(() => {
+      fetchSessionResults(sessionId, true);
+    }, POLLING_INTERVAL_MS);
+  }, [stopPolling, fetchSessionResults]);
+
+  useEffect(() => {
+    const fetchInitialSessions = async () => {
+      setIsFetchingSessions(true);
+      setError(null);
+      try {
+        const fetchedSessions = await getClusteringSessions(fetchWithAuth);
+        setSessions(fetchedSessions);
+      } catch (err: any) {
+        console.error("Error fetching sessions:", err);
+        const errorMsg = err.message || 'Не удалось загрузить список сессий.';
+        setError(errorMsg);
+      } finally {
+        setIsFetchingSessions(false);
+      }
+    };
+    fetchInitialSessions();
+    return () => {
+        stopPolling();
+    };
+  }, [fetchWithAuth, stopPolling]);
+
+  useEffect(() => {
+    stopPolling();
+    setSelectedClusterIds(new Set());
+    setSplitTarget(null);
+    setError(null);
+
+    if (currentSessionId) {
+      fetchSessionResults(currentSessionId).then(() => {
+         setTimeout(() => {
+             setCurrentSessionDetails(prevDetails => {
+                if (prevDetails && prevDetails.session_id === currentSessionId && !FINAL_STATUSES.includes(prevDetails.status)) {
+                     startPolling(currentSessionId);
+                }
+                return prevDetails;
+             });
+         }, 0);
+      });
     } else {
-        setSelectedFile(null);
+      setCurrentSessionDetails(null);
     }
-  };
+    return () => {
+        stopPolling();
+    };
+  }, [currentSessionId, fetchSessionResults, startPolling, stopPolling]);
 
-  const handleAlgorithmChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    setSelectedAlgorithm(event.target.value as Algorithm | '');
-  };
 
-  const handleParamChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = event.target;
-    setAlgorithmParams(prevParams => ({
-      ...prevParams,
-      [name]: value
-    }));
-  };
-
-  const getRequiredParams = useCallback((): string[] => {
-      const algoConfig = ALGORITHMS.find(a => a.key === selectedAlgorithm);
-      return algoConfig ? algoConfig.params : [];
-  }, [selectedAlgorithm]);
-
-  const validateParams = useCallback((): boolean => {
-      if (!selectedAlgorithm) {
-          toast.error("Пожалуйста, выберите алгоритм кластеризации.");
-          return false;
+  const handleSelectSession = useCallback((sessionId: string) => {
+      if (sessionId !== currentSessionId) {
+          setCurrentSessionId(sessionId);
       }
-      const requiredParams = getRequiredParams();
-      for (const paramName of requiredParams) {
-           const value = algorithmParams[paramName as keyof AlgorithmParams];
-           if (value === undefined || value === '' || value === null) {
-               toast.error(`Параметр "${paramName}" для алгоритма ${selectedAlgorithm.toUpperCase()} обязателен.`);
-               return false;
-           }
-           const numValue = Number(value);
-           if (isNaN(numValue)) {
-               toast.error(`Параметр "${paramName}" должен быть числом.`);
-               return false;
-           }
-           if ((paramName === 'n_clusters' || paramName === 'min_samples') && numValue <= 0) {
-                toast.error(`Параметр "${paramName}" должен быть больше 0.`);
-                return false;
-           }
-           if (paramName === 'eps' && numValue <= 0) {
-               toast.error(`Параметр "${paramName}" должен быть положительным числом.`);
-               return false;
-           }
-      }
-      return true;
-  }, [selectedAlgorithm, algorithmParams, getRequiredParams]);
+  }, [currentSessionId]);
 
-   const getParsedParams = useCallback((): AlgorithmParams => {
-      const parsed: AlgorithmParams = {};
-      const requiredParams = getRequiredParams();
-      for (const paramName of requiredParams) {
-          const value = algorithmParams[paramName as keyof AlgorithmParams];
-          if (value !== undefined && value !== '' && value !== null) {
-              parsed[paramName as keyof AlgorithmParams] = Number(value);
-          }
-      }
-      return parsed;
-   // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [selectedAlgorithm, algorithmParams, getRequiredParams]);
-
-  const handleStartClustering = useCallback(() => {
-    if (!validateParams()) {
-        return;
-    }
-
-    if (!selectedAlgorithm) {
-        console.error("handleStartClustering called with empty algorithm despite validation.");
-        toast.error("Внутренняя ошибка: Алгоритм не выбран.");
-        return;
-    }
-
+  const handleStartClustering = useCallback(async (payload: StartClusteringPayload) => {
     setIsLoading(true);
     setError(null);
-    setClusteringInitiated(true);
-    setClusters([]);
-    const parsedParams = getParsedParams();
-
-    let clusteringMode = `симуляцию (${selectedAlgorithm.toUpperCase()})`;
-    if (selectedFile) {
-        clusteringMode = `кластеризацию по файлу "${selectedFile.name}" (Алгоритм: ${selectedAlgorithm.toUpperCase()})`;
-        console.log(`Simulating: Starting clustering with ${selectedAlgorithm} (Params: ${JSON.stringify(parsedParams)}) using file: ${selectedFile.name}`);
-    } else {
-        clusteringMode = `автоматическую кластеризацию (Алгоритм: ${selectedAlgorithm.toUpperCase()})`;
-        console.log(`Simulating: Starting default clustering with ${selectedAlgorithm} (Params: ${JSON.stringify(parsedParams)})...`);
-    }
-
-    toast.info(`Начинаем ${clusteringMode}...`);
-
-    setTimeout(() => {
-      try {
-        const mockData = generateMockClusters(selectedFile ? 7 : 5, selectedAlgorithm, parsedParams);
-        setClusters(mockData);
+    stopPolling();
+    setCurrentSessionId(null);
+    setCurrentSessionDetails(null);
+    toast.info(`Запускаем кластеризацию (${payload.algorithm.toUpperCase()})...`);
+    try {
+        const response = await startClustering(fetchWithAuth, payload);
+        toast.success(`Кластеризация запущена! ID сессии: ${response.session_id}`);
+        const newSessionItem: SessionListItem = {
+            session_id: response.session_id, created_at: new Date().toISOString(), status: 'STARTED',
+            algorithm: payload.algorithm, params: payload.params, num_clusters: null,
+            result_message: "Запущено...", original_filename: payload.embeddingFile.name
+        };
+        setSessions(prev => [newSessionItem, ...prev]);
+        setCurrentSessionId(response.session_id);
+    } catch (err: any) {
+        console.error("Clustering start error:", err);
+        const errorMsg = err.message || 'Не удалось запустить кластеризацию.';
+        setError(errorMsg);
+        toast.error(`Ошибка запуска кластеризации: ${errorMsg}`);
+        throw err;
+    } finally {
         setIsLoading(false);
-        console.log(`Simulating: Clustering with ${selectedAlgorithm} completed.`, mockData);
-        toast.success(`Кластеризация (${selectedAlgorithm.toUpperCase()}) успешно завершена!`);
+    }
+  }, [fetchWithAuth, stopPolling]);
 
-      } catch (err) {
-          const message = err instanceof Error ? err.message : 'Неизвестная ошибка симуляции';
-          setError(`Ошибка симуляции кластеризации: ${message}`);
-          setIsLoading(false);
-          setClusters([]);
-          console.error(`Simulating: Clustering with ${selectedAlgorithm?.toUpperCase()} failed.`, err);
-          toast.error(`Ошибка кластеризации (${selectedAlgorithm?.toUpperCase()}): ${message}`);
+   const handleDeleteAndRedistributeCluster = useCallback((clusterId: string | number) => {
+    if (!currentSessionId || !currentSessionDetails) return;
+    const clusterToDelete = currentSessionDetails.clusters.find(c => String(c.id) === String(clusterId));
+    const clusterDisplayName = clusterToDelete?.name || `Кластер ${clusterId}`;
+    setConfirmDeleteArgs({ clusterId, clusterDisplayName });
+    setIsConfirmDeleteModalOpen(true);
+  }, [currentSessionId, currentSessionDetails]);
+
+  const confirmDeletion = useCallback(async () => {
+      if (!currentSessionId || !confirmDeleteArgs) return;
+      const { clusterId, clusterDisplayName } = confirmDeleteArgs;
+      setIsConfirmDeleteLoading(true);
+      setIsDeletingId(clusterId);
+      setError(null);
+      stopPolling();
+      toast.info(`Удаляем '${clusterDisplayName}' и перераспределяем...`);
+      try {
+          const response = await deleteAndRedistributeCluster(fetchWithAuth, currentSessionId, String(clusterId));
+          toast.success(response.message || `'${clusterDisplayName}' удален.`);
+          await fetchSessionResults(currentSessionId);
+      } catch (err: any) {
+          console.error(`Error deleting/redistributing cluster ${clusterId}:`, err);
+          const errorMsg = err.message || `Не удалось удалить/перераспределить '${clusterDisplayName}'.`;
+          setError(errorMsg);
+          toast.error(errorMsg);
+          fetchSessionResults(currentSessionId);
+      } finally {
+          setIsConfirmDeleteLoading(false);
+          setIsDeletingId(null);
+          setIsConfirmDeleteModalOpen(false);
+          setConfirmDeleteArgs(null);
+          setSelectedClusterIds(new Set());
       }
-    }, 2500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFile, selectedAlgorithm, algorithmParams, validateParams, getParsedParams]);
+  }, [currentSessionId, confirmDeleteArgs, fetchWithAuth, stopPolling, fetchSessionResults]);
 
-  const handleDeleteContactSheet = useCallback((clusterId: string | number) => {
-    setIsDeletingId(clusterId);
+  const closeConfirmDeleteModal = () => {
+       setIsConfirmDeleteModalOpen(false);
+       setConfirmDeleteArgs(null);
+   };
+
+  const handleRenameCluster = useCallback(async (clusterId: string | number, newName: string): Promise<boolean> => {
+    if (!currentSessionId) { toast.error("Нет активной сессии."); return false; }
+    const clusterToRename = currentSessionDetails?.clusters.find(c => String(c.id) === String(clusterId));
+    const oldDisplayName = clusterToRename?.name || `Кластер ${clusterId}`;
+    setIsRenamingId(clusterId);
     setError(null);
-    console.log(`Simulating: Deleting contact sheet for cluster ${clusterId} and re-clustering...`);
-    toast.info(`Удаляем отпечаток кластера ${clusterId} и запускаем рекластеризацию...`);
+    let success = false;
+    try {
+        await renameCluster(fetchWithAuth, currentSessionId, clusterId, newName);
+        toast.success(`Кластер '${oldDisplayName}' переименован.`);
+        await fetchSessionResults(currentSessionId);
+        success = true;
+    } catch (err: any) {
+        console.error(`Error renaming cluster ${clusterId}:`, err);
+        const errorMsg = err.message || `Не удалось переименовать '${oldDisplayName}'.`;
+        setError(errorMsg);
+        toast.error(errorMsg);
+        success = false;
+    } finally {
+        setIsRenamingId(null);
+    }
+    return success;
+  }, [currentSessionId, currentSessionDetails, fetchWithAuth, fetchSessionResults]);
 
-    const reclusterAlgo = selectedAlgorithm || 'kmeans';
-    const reclusterParams = Object.keys(algorithmParams).length > 0 ? getParsedParams() : {n_clusters: 4};
+  const handleToggleClusterSelection = useCallback((clusterId: string | number) => {
+      setSelectedClusterIds(prev => {
+          const newSet = new Set(prev);
+          if (newSet.has(clusterId)) {
+              newSet.delete(clusterId);
+          } else {
+              newSet.add(clusterId);
+          }
+          return newSet;
+      });
+  }, []);
 
-    setTimeout(() => {
-        try {
-            const remainingClusters = clusters.filter(c => c.id !== clusterId);
-            const updatedClusters = generateMockClusters(Math.max(1, remainingClusters.length), reclusterAlgo, reclusterParams);
+  const handleMergeClick = useCallback(async () => {
+      if (!currentSessionId || selectedClusterIds.size < 2) return;
+      setIsMerging(true);
+      setError(null);
+      stopPolling();
+      const idsToMerge = Array.from(selectedClusterIds);
+      toast.info(`Слияние кластеров: ${idsToMerge.join(', ')}...`);
+      try {
+          const response = await mergeSelectedClusters(fetchWithAuth, currentSessionId, idsToMerge);
+          toast.success(response.message || `Кластеры слиты.`);
+          await fetchSessionResults(currentSessionId);
+          setSelectedClusterIds(new Set());
+      } catch (err: any)
+       {
+           console.error(`Error merging clusters ${idsToMerge}:`, err);
+           const errorMsg = err.message || `Не удалось слить кластеры.`;
+           setError(errorMsg);
+           toast.error(errorMsg);
+           fetchSessionResults(currentSessionId);
+       } finally {
+          setIsMerging(false);
+      }
+  }, [currentSessionId, selectedClusterIds, fetchWithAuth, stopPolling, fetchSessionResults]);
 
-            setClusters(updatedClusters);
-            setIsDeletingId(null);
-            console.log(`Simulating: Re-clustering complete after deleting ${clusterId}.`, updatedClusters);
-            toast.success(`Кластер ${clusterId} удален, рекластеризация (${reclusterAlgo.toUpperCase()}) завершена!`);
-
-            if (updatedClusters.length === 0) {
-                 toast.info("Все кластеры были удалены или рекластеризация не дала результатов.");
-                 setClusteringInitiated(false);
-            }
-
-        } catch (err) {
-            const message = err instanceof Error ? err.message : 'Неизвестная ошибка симуляции';
-            setError(`Ошибка симуляции удаления/рекластеризации: ${message}`);
-            setIsDeletingId(null);
-            console.error(`Simulating: Failed to delete/re-cluster for ${clusterId}.`, err);
-            toast.error(`Ошибка удаления/рекластеризации: ${message}`);
+   const handleInitiateSplit = useCallback((clusterId: string | number) => {
+        if (!currentSessionDetails) return;
+        const clusterToSplit = currentSessionDetails.clusters.find(c => String(c.id) === String(clusterId));
+        if (clusterToSplit) {
+             setSplitTarget({ id: clusterId, name: clusterToSplit.name || `Кластер ${clusterId}` });
         }
-    }, 1500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clusters, selectedAlgorithm, algorithmParams, getParsedParams]);
+   }, [currentSessionDetails]);
 
-  const startButtonText = selectedFile
-        ? `Запустить по файлу (${selectedFile.name.substring(0, 20)}${selectedFile.name.length > 20 ? '...' : ''})`
-        : `Запустить ${selectedAlgorithm ? selectedAlgorithm.toUpperCase() : 'кластеризацию'} (симуляция)`;
+   const handleCancelSplit = useCallback(() => {
+       setSplitTarget(null);
+   }, []);
 
-    const isControlsDisabled = isLoading || isDeletingId !== null;
-    const requiredParams = getRequiredParams();
+   const handleConfirmSplit = useCallback(async (numSplits: number) => {
+        if (!currentSessionId || !splitTarget) return;
+        setIsSplitting(true);
+        setError(null);
+        stopPolling();
+        toast.info(`Разделение кластера '${splitTarget.name}' на ${numSplits} части...`);
+        try {
+            const response = await splitSelectedCluster(fetchWithAuth, currentSessionId, splitTarget.id, numSplits);
+            toast.success(response.message || `Кластер разделен.`);
+            setSplitTarget(null);
+            await fetchSessionResults(currentSessionId);
+        } catch (err: any) {
+             console.error(`Error splitting cluster ${splitTarget.id}:`, err);
+             const errorMsg = err.message || `Не удалось разделить кластер.`;
+             setError(errorMsg);
+             toast.error(errorMsg);
+             setSplitTarget(null);
+             fetchSessionResults(currentSessionId);
+         } finally {
+            setIsSplitting(false);
+        }
+   }, [currentSessionId, splitTarget, fetchWithAuth, stopPolling, fetchSessionResults]);
+
+  const canAdjustClusters = currentSessionDetails?.status === 'SUCCESS' || currentSessionDetails?.status === 'RECLUSTERED';
+  const overallDisabled = isProcessingAny || !canAdjustClusters;
 
   return (
     <div className="clustering-dashboard">
       <h2>Панель управления кластеризацией</h2>
 
-      <div className="card controls-card">
-        <h3>Управление</h3>
-        <div className="clustering-controls">
-            <div className="file-upload-wrapper">
-                 <label htmlFor="parquet-upload" className="file-upload-label">
-                     1. Загрузить файл эмбеддингов (.parquet):
-                 </label>
-                <input
-                    type="file"
-                    id="parquet-upload"
-                    className="file-input"
-                    accept=".parquet"
-                    onChange={handleFileChange}
-                    ref={fileInputRef}
-                    disabled={isControlsDisabled}
-                    aria-describedby="file-status-info"
+      <SessionSelector
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onSelectSession={handleSelectSession}
+        disabled={isProcessingAny}
+        isLoading={isFetchingSessions}
+        error={error && !currentSessionId ? error : null}
+      />
+
+      <ClusteringControls
+        onStartClustering={handleStartClustering}
+        disabled={isProcessingAny}
+      />
+
+      {currentSessionId && isFetchingResults && !pollingIntervalRef.current && (
+        <div className="card status-card"> <p>Загрузка результатов для сессии {currentSessionId.substring(0,8)}...</p> </div>
+      )}
+      {currentSessionId && !isFetchingResults && !currentSessionDetails && error && (
+           <div className="card status-card error-message"><p>Ошибка загрузки результатов: {error}</p></div>
+       )}
+
+      {currentSessionId && currentSessionDetails && (
+          <>
+              <SessionDetailsDisplay details={currentSessionDetails} />
+
+              <ExportControls
+                    sessionId={currentSessionId}
+                    fetchWithAuth={fetchWithAuth}
+                    disabled={isProcessingAny}
+                    sessionStatus={currentSessionDetails.status}
+              />
+
+              {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED' || currentSessionDetails.status === 'PROCESSING') && (
+                  <ChartsDisplay
+                      details={currentSessionDetails}
+                      sessionId={currentSessionId}
+                  />
+              )}
+
+              {canAdjustClusters && currentSessionDetails.clusters.length > 0 && (
+                  <div className="card" style={{ padding: '1rem', marginBottom: '1rem', textAlign: 'center' }}>
+                      <button
+                          className="primary-btn"
+                          onClick={handleMergeClick}
+                          disabled={selectedClusterIds.size < 2 || overallDisabled}
+                          title={selectedClusterIds.size < 2 ? "Выберите 2 или более кластера для слияния" : (overallDisabled ? "Операция недоступна" : "Слить выбранные кластеры")}
+                      >
+                          Слить выбранные ({selectedClusterIds.size})
+                      </button>
+                  </div>
+              )}
+
+               {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && (
+                  <ContactSheetsGrid
+                    clusters={currentSessionDetails.clusters || []}
+                    sessionId={currentSessionId}
+                    onRedistribute={handleDeleteAndRedistributeCluster}
+                    onRename={handleRenameCluster}
+                    isDeletingId={isDeletingId}
+                    disabled={overallDisabled}
+                    status={currentSessionDetails.status}
+                    selectedIds={selectedClusterIds}
+                    onToggleSelection={handleToggleClusterSelection}
+                    onInitiateSplit={handleInitiateSplit}
+                  />
+              )}
+
+              {/* Display Adjustment History */}
+              {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && currentSessionDetails.adjustments && (
+                <AdjustmentHistoryDisplay
+                    adjustments={currentSessionDetails.adjustments}
+                    sessionId={currentSessionId}
                 />
-            </div>
+              )}
 
-             <div className="form-group algo-select-group">
-                <label htmlFor="algorithm-select">2. Выбрать алгоритм:</label>
-                <select
-                    id="algorithm-select"
-                    value={selectedAlgorithm}
-                    onChange={handleAlgorithmChange}
-                    disabled={isControlsDisabled}
-                    className="algo-select"
-                    required
-                >
-                    <option value="" disabled>-- Выберите алгоритм --</option>
-                    {ALGORITHMS.map(algo => (
-                        <option key={algo.key} value={algo.key}>{algo.name}</option>
-                    ))}
-                </select>
-            </div>
-            <button
-              className="primary-btn start-clustering-btn"
-              onClick={handleStartClustering}
-              disabled={isControlsDisabled || !selectedAlgorithm}
-              title={startButtonText}
-            >
-              {isLoading ? 'Кластеризация...' : `3. Запустить ${selectedAlgorithm ? selectedAlgorithm.toUpperCase() : ''}`}
-            </button>
-
-            {selectedAlgorithm && (
-                 <div className="algorithm-params">
-                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>
-                       Параметры для {ALGORITHMS.find(a => a.key === selectedAlgorithm)?.name}:
-                    </label>
-                    {requiredParams.map(paramName => (
-                        <div className="form-group param-group" key={paramName}>
-                           <label htmlFor={`param-${paramName}`}>{paramName}:</label>
-                            <input
-                                type="number"
-                                id={`param-${paramName}`}
-                                name={paramName}
-                                value={algorithmParams[paramName as keyof AlgorithmParams] ?? ''}
-                                onChange={handleParamChange}
-                                disabled={isControlsDisabled}
-                                step={paramName === 'eps' ? '0.01' : '1'}
-                                min={paramName === 'eps' ? '0.01' : '1'}
-                                required
-                                className="param-input"
-                            />
-                        </div>
-                    ))}
+               {currentSessionDetails.status !== 'SUCCESS' && currentSessionDetails.status !== 'RECLUSTERED' && currentSessionDetails.status !== 'PROCESSING' && (
+                 <div className="card status-card">
+                     <p>Статус сессии {currentSessionId.substring(0,8)}...: <strong>{currentSessionDetails.status}</strong>.</p>
+                     {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
+                     {currentSessionDetails.error && <p className="error-message">{currentSessionDetails.error}</p>}
+                     <p>Результаты не могут быть отображены или изменены в данный момент.</p>
                  </div>
-            )}
-        </div>
+              )}
+              {currentSessionDetails.status === 'PROCESSING' && !isFetchingResults && (
+                   <div className="card status-card">
+                       <p>Сессия {currentSessionId.substring(0,8)}... обрабатывается. Статус будет обновлен автоматически.</p>
+                       {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
+                   </div>
+              )}
+          </>
+       )}
 
-        <div id="file-status-info" className="status-messages">
-            {selectedFile && !isLoading && (
-                <p className="file-status-info">Выбран файл: {selectedFile.name}</p>
-            )}
-            {!selectedFile && !isLoading && (
-                 <p className="file-status-info">Файл не выбран, будет запущена симуляция на основе случайных данных.</p>
-            )}
-             {!selectedAlgorithm && !isLoading && (
-                 <p className="file-status-info" style={{ color: '#dc3545' }}>Алгоритм кластеризации не выбран.</p>
-             )}
-        </div>
-        {error && <p className="error-message" style={{marginTop: '1rem'}}>{error}</p>}
-      </div>
+       {!currentSessionId && !isProcessingAny && sessions.length > 0 && ( <div className="card status-card"> <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p> </div> )}
+       {!currentSessionId && !isProcessingAny && sessions.length === 0 && !isFetchingSessions && !error && ( <div className="card status-card"> <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p> </div> )}
 
-      {isLoading && (
-        <div className="card status-card">
-          <p>Идет процесс кластеризации ({selectedAlgorithm?.toUpperCase()}), пожалуйста, подождите...</p>
-        </div>
-      )}
+        <ConfirmationModal
+            isOpen={isConfirmDeleteModalOpen}
+            onClose={closeConfirmDeleteModal}
+            onConfirm={confirmDeletion}
+            title="Подтверждение удаления"
+            message={
+                confirmDeleteArgs ? (
+                    <>Вы уверены, что хотите удалить <br /><strong>'{confirmDeleteArgs.clusterDisplayName}'</strong>?<br />Его точки будут перераспределены. Это действие необратимо.</>
+                ) : ('Подтвердите действие.')
+            }
+            confirmText="Удалить и перераспределить"
+            cancelText="Отмена"
+            confirmButtonClass="danger-btn"
+            isLoading={isConfirmDeleteLoading}
+        />
 
-      {!isLoading && clusteringInitiated && clusters.length === 0 && !error && (
-          <div className="card status-card">
-             <p>Нет данных для отображения. Возможно, кластеризация ({selectedAlgorithm?.toUpperCase()}) не дала результатов или все кластеры были удалены.</p>
-          </div>
-      )}
+        <SplitClusterModal
+            isOpen={splitTarget !== null}
+            onClose={handleCancelSplit}
+            onConfirm={handleConfirmSplit}
+            clusterId={splitTarget?.id ?? null}
+            clusterDisplayName={splitTarget?.name ?? ''}
+            isLoading={isSplitting}
+        />
 
-      {!isLoading && clusters.length > 0 && (
-        <>
-          <div className="card metrics-card">
-            <h3>Метрики и Графики ({selectedAlgorithm?.toUpperCase()}, Симуляция)</h3>
-            <p>Всего кластеров: {clusters.length}</p>
-            <p>Средний размер кластера: {(clusters.reduce((sum, c) => sum + c.size, 0) / clusters.length).toFixed(0)}</p>
-            <div className="graph-placeholder">
-                <img src={`https://placehold.co/600x300/E8E8E8/A9A9A9?text=График+распределения+кластеров+(${selectedAlgorithm?.toUpperCase()})`} alt="Placeholder Graph" />
-            </div>
-             <h4>Ручная корректировка (Placeholder)</h4>
-             <p>Здесь будут элементы для объединения, разделения кластеров.</p>
-              <button className="secondary-btn" disabled>Объединить выбранные</button>
-              <button className="secondary-btn" disabled style={{marginLeft: '10px'}}>Разделить выбранный</button>
-          </div>
-
-          <div className="card contact-sheets-card">
-            <h3>Контактные отпечатки ({selectedAlgorithm?.toUpperCase()})</h3>
-            <div className="contact-sheets-grid">
-              {clusters.map(cluster => (
-                <ContactSheet
-                  key={cluster.id}
-                  clusterId={cluster.id}
-                  imageUrl={cluster.contactSheetUrl}
-                  clusterSize={cluster.size}
-                  onDelete={handleDeleteContactSheet}
-                  isDeleting={isDeletingId === cluster.id}
-                />
-              ))}
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 };

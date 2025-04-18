@@ -1,0 +1,69 @@
+.sessions-card {
+    margin-bottom: 2rem;
+}
+
+.sessions-card h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.5rem;
+}
+
+.sessions-list-container {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #eee;
+    padding: 0.5rem;
+    border-radius: 8px;
+}
+
+.session-item {
+    padding: 8px 12px;
+    margin-bottom: 5px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background-color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    cursor: pointer;
+}
+
+.session-item:hover:not(.disabled) {
+    border-color: #bbb;
+    background-color: #f8f9fa;
+}
+
+.session-item.active {
+    border-color: #007bff;
+    background-color: #e7f3ff;
+}
+
+.session-item.disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.session-info {
+    overflow: visible;
+    white-space: normal;
+    margin-right: 10px;
+    font-size: 0.95em; /* Немного увеличим основной текст ID */
+    line-height: 1.3;
+}
+
+.session-meta {
+    font-size: 0.9em; /* Уменьшим мета-информацию */
+    color: #555;
+}
+
+.session-status-badge {
+    font-weight: 500;
+    font-size: 0.8em;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background-color: #f0f0f0;
+    white-space: nowrap;
+    flex-shrink: 0; /* Предотвратить сжатие статуса */
+}

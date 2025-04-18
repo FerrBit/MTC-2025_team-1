@@ -8,39 +8,39 @@
     flex-wrap: wrap;
     gap: 1rem;
   }
-  
+
   .header-content {
     text-align: left;
     flex-grow: 1;
   }
-  
+
   .header h1 {
     color: #1a1a1a;
     font-size: 2.2rem;
     margin-bottom: 0.3rem;
     font-weight: 600;
   }
-  
+
   .header p {
     color: #555;
     font-size: 1.1rem;
     margin: 0;
   }
-  
+
   .auth-buttons {
     display: flex;
     gap: 12px;
     align-items: center;
     flex-shrink: 0;
   }
-  
+
   .auth-buttons span {
     margin-right: 15px;
     color: #333;
     white-space: nowrap;
     font-weight: 500;
   }
-  
+
   .logout-icon-btn {
     background: none;
     border: none;
@@ -54,30 +54,30 @@
     border-radius: 50%;
     transition: background-color 0.2s ease, color 0.2s ease;
   }
-  
+
   .logout-icon-btn svg {
     width: 24px;
     height: 24px;
     fill: currentColor;
   }
-  
+
   .logout-icon-btn:hover:not(:disabled) {
     background-color: rgba(220, 53, 69, 0.1);
     color: #b02a37;
   }
-  
+
   .logout-icon-btn:focus-visible {
       outline: 2px solid #dc3545;
       outline-offset: 2px;
       background-color: rgba(220, 53, 69, 0.1);
   }
-  
+
   .logout-icon-btn:disabled {
     color: #adb5bd;
     cursor: not-allowed;
     background: none;
   }
-  
+
   @media (max-width: 768px) {
     .header {
         gap: 0.5rem;
@@ -103,7 +103,7 @@
          font-size: 0.9rem;
      }
   }
-  
+
   @media (max-width: 480px) {
       .header h1 {
         font-size: 1.3rem;
